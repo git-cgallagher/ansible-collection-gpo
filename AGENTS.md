@@ -62,12 +62,24 @@ pip install ansible-core ansible-lint yamllint
 ansible-galaxy collection install -r requirements.yml
 yamllint . && ansible-lint
 
+# PowerShell lint exactly as CI's `ansible-test sanity` pslint runs it — the
+# settings ship inside ansible-core; Invoke-Formatter with the same -Settings
+# auto-fixes brace/whitespace/indentation findings (how 0.1.0 was styled):
+S=$(python3 -c 'import ansible_test, pathlib; print(pathlib.Path(ansible_test.__file__).parent / "_util/controller/sanity/pslint/settings.psd1")')
+pwsh -c "Invoke-ScriptAnalyzer -Path roles -Recurse -Settings '$S'"
+
 # build the tarball
 ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
 
+- **`ansible-test sanity` runs pslint over every `*.ps1` in the collection**,
+  `roles/*/files/` included, with ansible-core's own `settings.psd1`:
+  uncuddled `else`/`catch`/`finally` (close brace gets its own line), no
+  aligned `=` columns, 4-space pipeline indentation. PR #1 (the initial
+  collection PR) failed all five sanity jobs on 72 style findings; the fix is
+  the `Invoke-Formatter` command above, not hand-editing.
 - `Import-GPO` **replaces the whole GPO** and bumps its version (clients
   reprocess). That's why both roles hash content and keep state files
   (`C:\ProgramData\gpo-iac\*-state-<domain>.json` on the management host) —
