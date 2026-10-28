@@ -24,7 +24,9 @@ PSScriptAnalyzer, and a `cpassword` grep. The first lab-domain validation is
 tracked in the repo issues; until it closes, treat these as the known-blind
 spots:
 
-- `msWMI-Som` creation (`msWMI-Parm2` encoding) and `gPCWQLFilter` format.
+- `msWMI-Som` creation (`msWMI-Parm2` encoding) — the first lab run's seed
+  created one this way and GPMC found and linked it; the import's own
+  creation path is still unverified.
 - `Backup-GPO`-folder-per-GPO layout assumptions (`manifest.xml` +
   single `{guid}` dir) and `Import-GPO -BackupGpoName` against it.
 - `Get-GPInheritance`/`Set-GPLink` property shapes (`GpoInheritanceBlocked`,
@@ -77,6 +79,16 @@ ansible-galaxy collection build --force
 ```
 
 ## ⚠️ Gotchas
+
+- **Write GPO AD objects through GPMC, not `Set-ADObject`.** In the
+  domain_lab run of 2026-10-28, `Set-ADObject` (AD Web Services) on a GPO's
+  `groupPolicyContainer` failed with 8344 "insufficient access rights" as a
+  Domain Admin over PSRP/NTLM, while GPMC's own writes to the same objects
+  (registry settings bumping `versionNumber`, `GpoStatus`, the WMI filter
+  link) succeeded in the same session. Cause unconfirmed; the lab's seed
+  step records `whoami /groups` plus an ADWS probe to settle it. The roles
+  therefore link WMI filters with `Gpo.WmiFilter`; the test fixture uses ADSI
+  (LDAP, GPMC's own mechanism) for the writes GPMC has no API for.
 
 - **`ansible-test sanity` runs pslint over every `*.ps1` in the collection**,
   `roles/*/files/` included, with ansible-core's own `settings.psd1`:

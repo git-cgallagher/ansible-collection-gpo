@@ -146,6 +146,13 @@ function Get-GpoOrNull {
     }
 }
 
+function Get-GpmcWmiFilter {
+    param([string]$Name)
+    $gpDomain = New-Object -TypeName Microsoft.GroupPolicy.GPDomain -ArgumentList $Domain, $pdc
+    $criteria = New-Object -TypeName Microsoft.GroupPolicy.GPSearchCriteria
+    $gpDomain.SearchWmiFilters($criteria) | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+}
+
 function Get-RelativeTrusteeName {
     param([string]$Name, [string]$NetBiosName)
     if ($Name -and $Name.Contains('\')) {
@@ -347,23 +354,24 @@ foreach ($name in $gpoOrder) {
             }
         }
 
-        # -- WMI filter link (gPCWQLFilter on the GPO's AD object) --
+        # -- WMI filter link, through GPMC's API (not a raw gPCWQLFilter write:
+        #    Set-ADObject on a GPO's AD object was refused in the lab even as
+        #    Domain Admin, while GPMC's writes to the same objects succeeded) --
         $desiredFilter = $null
         if ($entry.PSObject.Properties['wmi_filter']) { $desiredFilter = $entry.wmi_filter }
         $currentFilter = $null
         if ($liveGpo.WmiFilter) { $currentFilter = $liveGpo.WmiFilter.Name }
         if ([string]$desiredFilter -ne [string]$currentFilter) {
-            $gpoDn = 'CN={' + $liveGpo.Id.ToString() + '},CN=Policies,CN=System,' + $rootDn
             if (-not $desiredFilter) {
                 Invoke-Change -Description "GPO '$name': clear WMI filter (was '$currentFilter')" -Action {
-                    Set-ADObject -Identity $gpoDn -Clear 'gPCWQLFilter' -Server $pdc
+                    $liveGpo.WmiFilter = $null
                 }
             }
             elseif ($liveFilters.ContainsKey([string]$desiredFilter)) {
-                $filterCn = $liveFilters[[string]$desiredFilter].Name   # "{guid}"
-                $value = '[{0};{1};0]' -f $Domain, $filterCn
                 Invoke-Change -Description "GPO '$name': WMI filter '$currentFilter' -> '$desiredFilter'" -Action {
-                    Set-ADObject -Identity $gpoDn -Replace @{ gPCWQLFilter = $value } -Server $pdc
+                    $filter = Get-GpmcWmiFilter -Name ([string]$desiredFilter)
+                    if (-not $filter) { throw "GPMC cannot see WMI filter '$desiredFilter'" }
+                    $liveGpo.WmiFilter = $filter
                 }
             }
             elseif ($ReportOnly -and $CreateWmiFilters) {

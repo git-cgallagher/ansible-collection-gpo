@@ -74,7 +74,8 @@ domain by `gpo_backup` and converged by `gpo_import`:
 - **WMI filters**: not part of any GPO backup (they're separate
   `msWMI-Som` objects). The manifest records name/namespace/query; the
   import can recreate them (`gpo_import_create_wmi_filters`) and relinks
-  GPOs by name via `gPCWQLFilter`.
+  GPOs by name through GPMC's API (`Gpo.WmiFilter`), not a raw
+  `gPCWQLFilter` write.
 - **Unmanaged containers**: a container absent from the manifest is never
   touched; on managed containers, extra links are reported, and removed
   only with `gpo_import_remove_unmanaged_links: true` (adopt-then-enforce).

@@ -87,12 +87,15 @@ jobs:
       - name: molecule test
         run: molecule test -s domain_lab --destroy=never
 
+      # nc needs -N (close on stdin EOF) and a timeout: the QEMU monitor keeps
+      # the socket open, so plain `nc -U` never exits (hung a run for 30 min).
       - name: Capture the VM screen
         if: failure()
+        timeout-minutes: 2
         run: |
           sock="$GPO_LAB_DIR/dc01-monitor.sock"
           if [ -S "$sock" ]; then
-            { printf 'screendump %s/screen.ppm\n' "$GPO_LAB_DIR"; sleep 3; } | nc -U "$sock" || true
+            { printf 'screendump %s/screen.ppm\n' "$GPO_LAB_DIR"; sleep 3; } | timeout 20 nc -N -U "$sock" || true
           fi
           ls -la "$GPO_LAB_DIR" || true
 

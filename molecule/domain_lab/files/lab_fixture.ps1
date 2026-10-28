@@ -30,6 +30,51 @@ $serversDn = "OU=Servers,$ouDn"
 $workstationsDn = "OU=Workstations,$ouDn"
 $somContainer = "CN=SOM,CN=WMIPolicy,CN=System,$rootDn"
 $done = New-Object System.Collections.ArrayList
+$diag = [ordered]@{}
+
+function Get-LdapEntry {
+    param([string]$Dn)
+    New-Object -TypeName System.DirectoryServices.DirectoryEntry -ArgumentList "LDAP://$pdc/$Dn"
+}
+
+function Set-AdAttributeLdap {
+    # ADSI/LDAP: the mechanism GPMC itself uses. In the lab, Set-ADObject
+    # (AD Web Services) was refused (8344) writing a GPO's AD object as Domain
+    # Admin while GPMC's writes to the same objects succeeded; cause unconfirmed.
+    param([string]$Dn, [hashtable]$Values)
+    $entry = Get-LdapEntry -Dn $Dn
+    try {
+        foreach ($key in $Values.Keys) { $entry.Properties[$key].Value = $Values[$key] }
+        $entry.CommitChanges()
+    }
+    catch {
+        $aces = @($entry.ObjectSecurity.Access | ForEach-Object {
+                '{0}:{1}:{2}' -f $_.IdentityReference, $_.AccessControlType, $_.ActiveDirectoryRights
+            })
+        throw "LDAP write to $Dn failed: $($_.Exception.Message) ACL: $($aces -join ' | ')"
+    }
+    finally { $entry.Dispose() }
+}
+
+function Get-SessionDiagnostic {
+    # Which groups this session's token carries, and whether an AD Web
+    # Services modify of a GPO's AD object is allowed (writes back the same
+    # versionNumber; non-fatal).
+    param([Guid]$GpoId)
+    $groups = @(whoami.exe /groups /fo csv | ConvertFrom-Csv |
+            Where-Object { $_.'Group Name' -match 'Domain Admins|Enterprise Admins|Administrators|Policy Creator' } |
+            ForEach-Object { $_.'Group Name' })
+    $dn = Get-GpoDn -Id $GpoId
+    $probe = 'allowed'
+    try {
+        $current = (Get-ADObject -Identity $dn -Properties versionNumber -Server $pdc).versionNumber
+        Set-ADObject -Identity $dn -Replace @{ versionNumber = $current } -Server $pdc
+    }
+    catch {
+        $probe = "denied: $($_.Exception.Message)"
+    }
+    [ordered]@{ user = (whoami.exe); groups = $groups; adws_modify_gpc = $probe }
+}
 
 function Test-AdObject {
     param([string]$Dn)
@@ -87,7 +132,7 @@ function Set-LabPasswordPolicy {
     $dn = Get-GpoDn -Id $GpoId
     $gpc = Get-ADObject -Identity $dn -Properties versionNumber -Server $pdc
     $version = [int]$gpc.versionNumber + 1
-    Set-ADObject -Identity $dn -Server $pdc -Replace @{
+    Set-AdAttributeLdap -Dn $dn -Values @{
         versionNumber = $version
         gPCMachineExtensionNames = '[{827D319E-6EAC-11D2-A4EA-00C04F79F83A}{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}]'
     }
@@ -190,6 +235,7 @@ function Invoke-Seed {
     $rdp.GpoStatus = [Microsoft.GroupPolicy.GpoStatus]::UserSettingsDisabled
 
     # Password Policy: security settings only (GptTmpl.inf).
+    $diag['session'] = Get-SessionDiagnostic -GpoId $gpos[$fx.gpo_password].Id
     Set-LabPasswordPolicy -GpoId $gpos[$fx.gpo_password].Id -MinimumLength 14
 
     # Links: order = precedence. Servers: Baseline (enforced) above RDP.
@@ -218,10 +264,34 @@ function Invoke-Drift {
         -TargetName 'Authenticated Users' -TargetType Group -PermissionLevel GpoApply | Out-Null
     Set-GPPermission -Guid $baseline.Id -Domain $Domain -Server $pdc `
         -TargetName $fx.group -TargetType Group -PermissionLevel GpoRead -Replace | Out-Null
-    Set-ADObject -Identity (Get-GpoDn -Id $baseline.Id) -Clear gPCWQLFilter -Server $pdc
+    # Unlink through GPMC (the path gpo_import uses to clear a filter), falling
+    # back to a raw LDAP clear; the result records which one worked.
+    $cleared = $false
+    try {
+        $baseline.WmiFilter = $null
+        $cleared = $null -eq (Get-GPO -Guid $baseline.Id -Domain $Domain -Server $pdc).WmiFilter
+        if ($cleared) { $how = 'gpmc' } else { $how = 'gpmc set returned but the filter is still linked' }
+    }
+    catch {
+        $how = "gpmc failed: $($_.Exception.Message)"
+    }
+    if (-not $cleared) {
+        $entry = Get-LdapEntry -Dn (Get-GpoDn -Id $baseline.Id)
+        try {
+            $entry.Properties['gPCWQLFilter'].Clear()
+            $entry.CommitChanges()
+        }
+        finally { $entry.Dispose() }
+        $how = "ldap ($how)"
+    }
+    $diag['wmi_clear'] = $how
     $filterObject = Get-WmiFilterObject -Name $fx.wmi_filter
     if ($filterObject) {
-        Remove-ADObject -Identity $filterObject.DistinguishedName -Confirm:$false -Server $pdc
+        $parent = Get-LdapEntry -Dn $somContainer
+        try {
+            $parent.Children.Remove($parent.Children.Find("CN=$($filterObject.Name)", 'msWMI-Som'))
+        }
+        finally { $parent.Dispose() }
     }
     Set-GPLink -Name $fx.gpo_baseline -Target $serversDn -Enforced No -Domain $Domain -Server $pdc | Out-Null
     [void]$done.Add("drifted $($fx.gpo_baseline)")
@@ -241,10 +311,11 @@ function Invoke-Drift {
 if ($Action -eq 'Seed') { Invoke-Seed } else { Invoke-Drift }
 
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
+$out = @{ done = @($done); diagnostics = $diag }
 if ($inAnsible) {
     $Ansible.Changed = $done.Count -gt 0
-    $Ansible.Result = @($done)
+    $Ansible.Result = $out
 }
 else {
-    $done
+    $out | ConvertTo-Json -Depth 5
 }

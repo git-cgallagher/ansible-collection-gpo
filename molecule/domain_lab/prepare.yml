@@ -110,6 +110,11 @@
           Action: Seed
           Domain: "{{ lab_domain }}"
           FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_seed
+
+    - name: Show the session's groups and whether AD Web Services may modify a GPO object
+      ansible.builtin.debug:
+        var: lab_seed.result.diagnostics
 
     - name: Start from an empty export directory
       ansible.builtin.file:
@@ -183,6 +188,13 @@
           Action: Drift
           Domain: "{{ lab_domain }}"
           FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_drift
+
+    # gpo_import clears a WMI filter link the same way; this shows whether
+    # GPMC's "set to none" worked or the LDAP fallback was needed.
+    - name: Show how the WMI filter link was cleared
+      ansible.builtin.debug:
+        var: lab_drift.result.diagnostics
 
     - name: Plan the import against the drifted domain (report-only)
       ansible.builtin.include_role:
