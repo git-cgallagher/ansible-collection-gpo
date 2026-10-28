@@ -153,6 +153,72 @@ function Get-GpmcWmiFilter {
     $gpDomain.SearchWmiFilters($criteria) | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
 }
 
+function Test-Denied {
+    # A Deny entry (typically "Deny Apply group policy" to exclude admins).
+    param($Permission)
+    [bool]($Permission.PSObject.Properties['Denied'] -and $Permission.Denied)
+}
+
+function Sync-GpoSecurity {
+    # Security filtering = the allow-Apply trustees. Deny entries are never
+    # touched: Set-GPPermission can't create them, and mistaking one for an
+    # Apply grant would hand the policy to the group it excludes. A Deny
+    # entry the manifest lists but the target lacks is an error (fail closed).
+    param([string]$Name, $Entry, $Gpo)
+    $perms = @(Get-GPPermission -Guid $Gpo.Id -All -Domain $Domain -Server $pdc)
+
+    $liveDenied = @{}
+    foreach ($perm in $perms) {
+        if (Test-Denied $perm) {
+            $denyName = Get-RelativeTrusteeName -Name ([string]$perm.Trustee.Name) -NetBiosName $netbios
+            $liveDenied[('{0}|{1}' -f $denyName, [string]$perm.Permission).ToLowerInvariant()] = $true
+        }
+    }
+    if ($Entry.PSObject.Properties['denied']) {
+        foreach ($deny in @($Entry.denied)) {
+            if (-not $deny) { continue }
+            if (-not $liveDenied.ContainsKey(('{0}|{1}' -f [string]$deny.name, [string]$deny.permission).ToLowerInvariant())) {
+                [void]$script:errors.Add(("GPO '{0}': the manifest has a Deny {1} entry for '{2}', which this collection can't create. " +
+                        'Add it in GPMC (Delegation > Advanced) and re-run.') -f $Name, $deny.permission, $deny.name)
+            }
+        }
+    }
+
+    if (-not ($Entry.PSObject.Properties['apply_to'] -and $null -ne $Entry.apply_to)) { return }
+    $desiredApply = @{}
+    foreach ($t in @($Entry.apply_to)) { $desiredApply[([string]$t.name).ToLowerInvariant()] = $t }
+    $currentApply = @{}
+    foreach ($perm in $perms) {
+        if ([string]$perm.Permission -ne 'GpoApply' -or (Test-Denied $perm)) { continue }
+        $relName = Get-RelativeTrusteeName -Name ([string]$perm.Trustee.Name) -NetBiosName $netbios
+        $sidType = [string]$perm.Trustee.SidType
+        $relType = 'Group'
+        if ($sidType -eq 'User') { $relType = 'User' }
+        elseif ($sidType -eq 'Computer') { $relType = 'Computer' }
+        $currentApply[$relName.ToLowerInvariant()] = @{ name = $relName; type = $relType }
+    }
+    foreach ($key in ($desiredApply.Keys | Sort-Object)) {
+        if ($currentApply.ContainsKey($key)) { continue }
+        $t = $desiredApply[$key]
+        Invoke-Change -Description "GPO '$Name': grant Apply to $($t.type) '$($t.name)'" -Action {
+            Set-GPPermission -Guid $Gpo.Id -Domain $Domain -Server $pdc `
+                -TargetName ([string]$t.name) -TargetType ([string]$t.type) `
+                -PermissionLevel GpoApply | Out-Null
+        }
+    }
+    foreach ($key in ($currentApply.Keys | Sort-Object)) {
+        if ($desiredApply.ContainsKey($key)) { continue }
+        $t = $currentApply[$key]
+        # Downgrade to Read, never remove outright: a principal that cannot
+        # read a GPO cannot process it at all (MS16-072).
+        Invoke-Change -Description "GPO '$Name': downgrade '$($t.name)' from Apply to Read" -Action {
+            Set-GPPermission -Guid $Gpo.Id -Domain $Domain -Server $pdc `
+                -TargetName ([string]$t.name) -TargetType ([string]$t.type) `
+                -PermissionLevel GpoRead -Replace | Out-Null
+        }
+    }
+}
+
 function Get-RelativeTrusteeName {
     param([string]$Name, [string]$NetBiosName)
     if ($Name -and $Name.Contains('\')) {
@@ -183,9 +249,11 @@ $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | Convert
 $gposRoot = Join-Path $SourceDir 'gpos'
 if (Test-Path -LiteralPath $gposRoot) {
     # GPP cpassword is deprecated, trivially decryptable, and a secret in Git.
+    # Only a non-empty value is one: GPP writes cpassword="" on items that set
+    # no password (renaming the built-in Administrator, for example).
     $hits = @(
         Get-ChildItem -LiteralPath $gposRoot -Recurse -Filter '*.xml' -File |
-            Select-String -Pattern 'cpassword' -List
+            Select-String -Pattern 'cpassword="[^"]+"' -List
     )
     if ($hits.Count -gt 0) {
         $paths = ($hits | ForEach-Object { $_.Path }) -join '; '
@@ -203,6 +271,10 @@ if ($MigrationTablePath) {
         throw "Migration table not found: $migTable"
     }
 }
+# Part of each GPO's recorded import key: editing the migration table (say,
+# to map a principal that was missing) must re-import what it applies to.
+$migTableHash = ''
+if ($migTable) { $migTableHash = (Get-FileHash -LiteralPath $migTable -Algorithm SHA256).Hash }
 
 # --- domain context + state ---------------------------------------------------
 $adDomain = Get-ADDomain -Identity $Domain
@@ -296,6 +368,11 @@ foreach ($name in $gpoOrder) {
         $wrapper = Join-Path $gposRoot $backupDir
 
         $liveGpo = Get-GpoOrNull -Name $name
+        $existed = $null -ne $liveGpo
+
+        # Narrow an existing GPO's security filtering before new content lands,
+        # so the new settings never apply to the old, wider scope.
+        if ($existed) { Sync-GpoSecurity -Name $name -Entry $entry -Gpo $liveGpo }
 
         # -- contents --
         if (-not (Test-Path -LiteralPath $wrapper)) {
@@ -309,11 +386,12 @@ foreach ($name in $gpoOrder) {
         }
         else {
             $backupHash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $wrapper)
+            $importKey = Get-StringHash -Text ($backupHash + '|' + $migTableHash)
             $reason = ''
             if ($ForceImport) { $reason = 'forced' }
             elseif (-not $liveGpo) { $reason = 'GPO missing in target' }
             elseif (-not $state.ContainsKey($name)) { $reason = 'never imported by this pipeline' }
-            elseif ($state[$name] -ne $backupHash) { $reason = 'backup content changed' }
+            elseif ($state[$name] -ne $importKey) { $reason = 'backup content or migration table changed' }
             if ($reason) {
                 $desc = "import GPO '$name' ($reason)"
                 if ($migTable) { $desc += ' [migration table]' }
@@ -333,7 +411,7 @@ foreach ($name in $gpoOrder) {
                 if (-not $ReportOnly) {
                     # Recorded only after Import-GPO succeeded (a throw skips
                     # this), so a failed import is retried on the next run.
-                    $newState[$name] = $backupHash
+                    $newState[$name] = $importKey
                     $liveGpo = Get-GpoOrNull -Name $name
                 }
             }
@@ -345,6 +423,7 @@ foreach ($name in $gpoOrder) {
             [void]$actions.Add("set status/filtering/WMI filter on '$name' (after create)")
             continue
         }
+        if (-not $existed) { Sync-GpoSecurity -Name $name -Entry $entry -Gpo $liveGpo }
 
         # -- status --
         $desiredStatus = [string]$entry.status
@@ -381,44 +460,6 @@ foreach ($name in $gpoOrder) {
                 [void]$errors.Add("GPO '$name': WMI filter '$desiredFilter' not found in $Domain; filter link not set")
             }
         }
-
-        # -- security filtering (GpoApply) --
-        if ($entry.PSObject.Properties['apply_to'] -and $null -ne $entry.apply_to) {
-            $desiredApply = @{}
-            foreach ($t in @($entry.apply_to)) { $desiredApply[([string]$t.name).ToLowerInvariant()] = $t }
-            $currentApply = @{}
-            foreach ($perm in @(
-                    Get-GPPermission -Guid $liveGpo.Id -All -Domain $Domain -Server $pdc |
-                        Where-Object { [string]$_.Permission -eq 'GpoApply' }
-                )) {
-                $relName = Get-RelativeTrusteeName -Name ([string]$perm.Trustee.Name) -NetBiosName $netbios
-                $sidType = [string]$perm.Trustee.SidType
-                $relType = 'Group'
-                if ($sidType -eq 'User') { $relType = 'User' }
-                elseif ($sidType -eq 'Computer') { $relType = 'Computer' }
-                $currentApply[$relName.ToLowerInvariant()] = @{ name = $relName; type = $relType }
-            }
-            foreach ($key in ($desiredApply.Keys | Sort-Object)) {
-                if ($currentApply.ContainsKey($key)) { continue }
-                $t = $desiredApply[$key]
-                Invoke-Change -Description "GPO '$name': grant Apply to $($t.type) '$($t.name)'" -Action {
-                    Set-GPPermission -Guid $liveGpo.Id -Domain $Domain -Server $pdc `
-                        -TargetName ([string]$t.name) -TargetType ([string]$t.type) `
-                        -PermissionLevel GpoApply | Out-Null
-                }
-            }
-            foreach ($key in ($currentApply.Keys | Sort-Object)) {
-                if ($desiredApply.ContainsKey($key)) { continue }
-                $t = $currentApply[$key]
-                # Downgrade to Read, never remove outright: a principal that
-                # cannot read a GPO cannot process it at all (MS16-072).
-                Invoke-Change -Description "GPO '$name': downgrade '$($t.name)' from Apply to Read" -Action {
-                    Set-GPPermission -Guid $liveGpo.Id -Domain $Domain -Server $pdc `
-                        -TargetName ([string]$t.name) -TargetType ([string]$t.type) `
-                        -PermissionLevel GpoRead -Replace | Out-Null
-                }
-            }
-        }
     }
     catch {
         [void]$errors.Add("GPO '$name': $($_.Exception.Message)")
@@ -429,7 +470,10 @@ foreach ($name in $gpoOrder) {
 $soms = @()
 if ($manifest.PSObject.Properties['soms'] -and $manifest.soms) { $soms = @($manifest.soms) }
 foreach ($som in $soms) {
-    $target = [string]$som.target
+    # Targets are relative to the domain root ('' = the root itself), so the
+    # same manifest rebases onto whichever domain this run targets.
+    $relative = [string]$som.target
+    if ($relative) { $target = "$relative,$rootDn" } else { $target = $rootDn }
     try {
         try {
             Get-ADObject -Identity $target -Server $pdc | Out-Null

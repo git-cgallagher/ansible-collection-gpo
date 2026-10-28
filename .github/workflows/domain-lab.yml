@@ -38,6 +38,9 @@ concurrency:
 env:
   PY_COLORS: '1'
   ANSIBLE_FORCE_COLOR: '1'
+  # Stream Ansible's output (retry lines included) instead of buffering it
+  # until the play ends; a stalled step is then visible in the live log.
+  PYTHONUNBUFFERED: '1'
   # The runner's temp disk: the box (~6 GB, plus ~6 GB while unpacking) and
   # the VM disk don't fit on the ~14 GB root filesystem.
   GPO_LAB_DIR: /mnt/gpo-lab
@@ -84,7 +87,9 @@ jobs:
 
       # --destroy=never: keep the VM for the diagnostics below; the last step
       # destroys it either way.
+      # A hang must become a failure, so the screen capture below runs.
       - name: molecule test
+        timeout-minutes: 75
         run: molecule test -s domain_lab --destroy=never
 
       # nc needs -N (close on stdin EOF) and a timeout: the QEMU monitor keeps

@@ -20,6 +20,8 @@ Runs against the domain's PDC emulator unless `gpo_import_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) and rights to write
 GPOs, OU `gPLink`/`gPOptions` and (optionally) `msWMI-Som` objects.
 
-All variables are documented in [defaults/main.yml](defaults/main.yml); the
+All variables are documented in
+[meta/argument_specs.yml](meta/argument_specs.yml), which Ansible also uses to
+validate them (`ansible-doc -t role git_cgallagher.gpo.gpo_import`); the
 workflow, manifest format and cross-domain story are in the
 [collection README](../../README.md) and [docs/design.md](../../docs/design.md).

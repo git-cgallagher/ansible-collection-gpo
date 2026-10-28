@@ -101,9 +101,10 @@
   gather_facts: false
   vars:
     lab_repo: "{{ lab_dir }}/gpo-repo"
-    lab_ou_dn: "OU={{ lab_fixture.ou }},{{ lab_root_dn }}"
+    # Manifest link targets are relative to the domain root ('' = the root).
+    lab_ou_rel: "OU={{ lab_fixture.ou }}"
   tasks:
-    - name: Seed OUs, a group, a WMI filter and three GPOs with links and filtering
+    - name: Seed OUs, groups, a WMI filter and five GPOs with links and filtering
       ansible.windows.win_powershell:
         script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_fixture.ps1') }}"
         parameters:
@@ -115,6 +116,22 @@
     - name: Show the session's groups and whether AD Web Services may modify a GPO object
       ansible.builtin.debug:
         var: lab_seed.result.diagnostics
+
+    # Fixture sanity before anything is exported: the hand-written password
+    # policy is a valid security template and, linked above Default Domain
+    # Policy, it is what the domain actually enforces.
+    - name: Read the effective domain password policy after seeding
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_seeded
+
+    - name: Check the seeded password policy is the one in force
+      ansible.builtin.assert:
+        that:
+          - lab_policy_seeded.result.min_length == 14
+          - lab_policy_seeded.result.lockout_threshold == 5
+          - lab_policy_seeded.result.complexity
+        fail_msg: "Effective policy after seeding: {{ lab_policy_seeded.result }}"
 
     - name: Start from an empty export directory
       ansible.builtin.file:
@@ -136,32 +153,43 @@
       ansible.builtin.assert:
         that:
           - lab_m.domain == lab_domain
+          - lab_m.root_dn == lab_root_dn
+          - lab_m.domain_sid is match('^S-1-5-21-')
+          - lab_m.gpos[lab_fixture.gpo_baseline].denied == []
           - lab_m.gpos[lab_fixture.gpo_baseline].status == 'AllSettingsEnabled'
           - lab_m.gpos[lab_fixture.gpo_baseline].wmi_filter == lab_fixture.wmi_filter
           - "lab_m.gpos[lab_fixture.gpo_baseline].apply_to == [{'name': lab_fixture.group, 'type': 'Group'}]"
           - lab_m.gpos[lab_fixture.gpo_rdp].status == 'UserSettingsDisabled'
           - "lab_m.gpos[lab_fixture.gpo_rdp].apply_to == [{'name': 'Authenticated Users', 'type': 'Group'}]"
           - lab_m.gpos[lab_fixture.gpo_password].status == 'AllSettingsEnabled'
+          - lab_fixture.gpo_server_admins in lab_m.gpos
+          - lab_fixture.gpo_ws_admins in lab_m.gpos
           - lab_m.wmi_filters[lab_fixture.wmi_filter].namespace == lab_fixture.wmi_namespace
           - lab_m.wmi_filters[lab_fixture.wmi_filter].query == lab_fixture.wmi_query
           - lab_m.wmi_filters[lab_fixture.wmi_filter].description == lab_fixture.wmi_description
+          - "lab_root.links == [{'gpo': lab_fixture.gpo_password, 'enforced': false, 'enabled': true},
+                                {'gpo': 'Default Domain Policy', 'enforced': false, 'enabled': true}]"
           - "lab_servers.links == [{'gpo': lab_fixture.gpo_baseline, 'enforced': true, 'enabled': true},
-                                   {'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': true}]"
+                                   {'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_server_admins, 'enforced': false, 'enabled': true}]"
           - not lab_servers.block_inheritance
-          - "lab_workstations.links == [{'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': false}]"
+          - "lab_workstations.links == [{'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': false},
+                                        {'gpo': lab_fixture.gpo_ws_admins, 'enforced': false, 'enabled': true}]"
           - lab_workstations.block_inheritance
-          - "lab_ou.links == [{'gpo': lab_fixture.gpo_password, 'enforced': false, 'enabled': true}]"
+          # An OU with no links and no blocked inheritance isn't in the manifest.
+          - lab_m.soms | selectattr('target', 'equalto', lab_ou_rel) | list | length == 0
         fail_msg: "Manifest doesn't match the fixture: {{ lab_m | to_nice_json }}"
       vars:
         lab_m: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
-        lab_servers: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Servers,' ~ lab_ou_dn) | first }}"
-        lab_workstations: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Workstations,' ~ lab_ou_dn) | first }}"
-        lab_ou: "{{ lab_m.soms | selectattr('target', 'equalto', lab_ou_dn) | first }}"
+        lab_root: "{{ lab_m.soms | selectattr('target', 'equalto', '') | first }}"
+        lab_servers: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Servers,' ~ lab_ou_rel) | first }}"
+        lab_workstations: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Workstations,' ~ lab_ou_rel) | first }}"
 
     - name: Check every fixture GPO was exported as a backup folder
       ansible.builtin.stat:
         path: "{{ lab_repo }}/gpos/{{ item }}/manifest.xml"
-      loop: "{{ [lab_fixture.gpo_baseline, lab_fixture.gpo_rdp, lab_fixture.gpo_password] }}"
+      loop: "{{ [lab_fixture.gpo_baseline, lab_fixture.gpo_rdp, lab_fixture.gpo_password,
+                 lab_fixture.gpo_server_admins, lab_fixture.gpo_ws_admins] }}"
       register: lab_backup_folders
       failed_when: not lab_backup_folders.stat.exists
       delegate_to: localhost
@@ -195,6 +223,20 @@
     - name: Show how the WMI filter link was cleared
       ansible.builtin.debug:
         var: lab_drift.result.diagnostics
+
+    # Precedence has real effect: with Default Domain Policy back on top, its
+    # weaker settings (7 characters, no lockout) win again.
+    - name: Read the effective domain password policy after the drift
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_drifted
+
+    - name: Check Default Domain Policy's settings now win
+      ansible.builtin.assert:
+        that:
+          - lab_policy_drifted.result.min_length == 7
+          - lab_policy_drifted.result.lockout_threshold == 0
+        fail_msg: "Effective policy after drift: {{ lab_policy_drifted.result }}"
 
     - name: Plan the import against the drifted domain (report-only)
       ansible.builtin.include_role:

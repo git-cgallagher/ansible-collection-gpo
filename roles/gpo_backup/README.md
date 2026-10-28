@@ -11,6 +11,8 @@ Runs against the domain's PDC emulator unless `gpo_backup_server` is set.
 Requires RSAT (GroupPolicy + ActiveDirectory modules) on the target host and
 `unzip` on the controller.
 
-All variables are documented in [defaults/main.yml](defaults/main.yml); the
+All variables are documented in
+[meta/argument_specs.yml](meta/argument_specs.yml), which Ansible also uses to
+validate them (`ansible-doc -t role git_cgallagher.gpo.gpo_backup`); the
 workflow and manifest format are in the
 [collection README](../../README.md).

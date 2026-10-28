@@ -160,10 +160,16 @@
     # then recreates the WinRM listeners and finally deletes C:\temp\setup.ps1.
     # WinRM answers *during* that sequence, so "port open" isn't "ready": poll
     # the marker from a fresh process each time, which a mid-poll reboot can't
-    # break the way it would break an Ansible connection.
+    # break the way it would break an Ansible connection. The per-attempt
+    # timeout matters: a call caught by that reboot can hang forever on a
+    # half-open slirp connection (it hung one CI run for 40 minutes).
     - name: Wait for the box's first boot to finish (OOBE, rearm reboot, WinRM reset)
       ansible.builtin.command:
         argv:
+          # coreutils timeout, not the task keyword: a timed-out task fails
+          # outright instead of being retried by `until`.
+          - timeout
+          - '40'
           - "{{ ansible_playbook_python }}"
           - -c
           - |
@@ -179,6 +185,16 @@
           - "{{ lab_platform.box_password }}"
       register: lab_first_boot
       until: lab_first_boot.rc == 0
-      retries: 120
-      delay: 15
+      retries: 90
+      delay: 10
+      failed_when: false
       changed_when: false
+
+    - name: Require the first boot to have finished
+      ansible.builtin.assert:
+        that: lab_first_boot.rc == 0
+        fail_msg: >-
+          The box didn't finish its first boot after 90 polls (last attempt rc
+          {{ lab_first_boot.rc }}{{ ' = timed out' if lab_first_boot.rc == 124 else '' }}:
+          {{ lab_first_boot.stderr | default('') | truncate(300) }}). The workflow's screen capture shows where it stopped.
+        quiet: true

@@ -93,10 +93,11 @@ uses **content hashes + state files** instead:
   `gpreport.xml` carry timestamps and backup GUIDs that would churn). A GPO
   is re-shipped only when that hash changes, so unchanged GPOs stay
   byte-identical in Git.
-- `gpo_import` hashes each backup folder in the repo and records, per GPO,
-  the hash it last imported (state file on the management host, per
-  domain). A GPO is imported when it's missing, its backup hash changed, or
-  `gpo_import_force` is set.
+- `gpo_import` hashes the same `DomainSysvol` subtree of each backup in the
+  repo, combined with the migration table's hash, and records the result per
+  GPO when an import succeeds (state file on the management host, per
+  domain). A GPO is imported when it's missing, that combined hash changed
+  (new content, or an edited migration table), or `gpo_import_force` is set.
 
 Consequences to be aware of:
 
@@ -105,10 +106,12 @@ Consequences to be aware of:
   re-run `gpo_backup` against the target and diff, or the future
   normalized-report compare (tracked issue).
 - The state lives on the management host: use the same host per domain, or
-  accept a one-time re-import after moving hosts.
-- `GPT.INI`-level version bumps inside `DomainSysvol` mean some
-  non-settings edits still re-ship a GPO. Harmless: the Git diff shows
-  exactly how trivial the change was.
+  accept a one-time re-import after moving hosts. The backup's state lives
+  there too, which means a failed fetch or a second working copy can "use
+  up" a change; moving that state into the manifest is a tracked issue.
+- Only `DomainSysvol` is hashed, so settings Backup-GPO keeps in
+  `Backup.xml` instead (AD-stored policies such as wired/wireless and IPsec)
+  don't trigger a re-ship or re-import yet (tracked issue).
 
 ## 4. Cross-domain
 
@@ -126,9 +129,14 @@ the hazard:
 
 Supporting conventions in this collection:
 
+- Link targets are stored **relative to the domain root** (`OU=Servers`; `""`
+  for the root) and rebased onto the target domain's DN on import.
 - The manifest stores trustee names **domain-relative** (the source domain's
   `NETBIOS\` prefix is stripped), so security filtering maps by relative
   name automatically. Destination groups must exist first.
+- **Deny entries** are recorded separately (`denied`) and never treated as
+  Apply. The import can't create them (`Set-GPPermission` has no deny), so a
+  target GPO missing one fails the run until someone adds it in GPMC.
 - Build migration tables with `mtedit.exe` ("Populate from Backup") or the
   `GPMgmt.GPM` COM API; commit one per target environment. `Import-GPO` has
   no "use table exclusively" switch, so unmapped principals import as
@@ -138,8 +146,11 @@ Supporting conventions in this collection:
 - ADMX parity does not gate application: clients apply `registry.pol`
   regardless of the target's Central Store; GPMC just shows "Extra Registry
   Settings" until the ADMX files are synced.
-- `gpo_import` **refuses any backup containing `cpassword`** (GPP
-  passwords: deprecated, trivially decryptable, and a secret in Git).
+- `gpo_import` **refuses any backup containing a non-empty `cpassword`** (GPP
+  passwords: deprecated, trivially decryptable, and a secret in Git). The
+  empty `cpassword=""` GPP writes on items that set no password is allowed.
+  The backup doesn't scan yet, so run a secret scanner (gitleaks, for
+  example) as a pre-commit hook in the repository that stores your GPOs.
 
 ## 5. Operational rules
 
@@ -168,20 +179,26 @@ Supporting conventions in this collection:
 | AGPM | change control for GPMC, not code; end-of-life |
 | SDM Software GPAE | the one commercial tool that authors ~every setting type as code; the buy-option if this pipeline isn't enough |
 | `Get-GPOReport` normalized diff for drift | right idea, needs a live domain to build against — tracked as an issue |
-| Readable diffs of `registry.pol` (`LGPO.exe /parse` textconv) and `GptTmpl.inf` (UTF-16 gitattributes) | recommended in the consuming repo; tracked as an issue to document |
+| A readable rendering of each GPO committed next to its backup | the right fix for reviewability (below); tracked as an issue |
 
 ## 7. Format notes for reviewers
 
-The committed artifacts under `gpos/<Name>/` are a verbatim
-`Backup-GPO` output: `manifest.xml` + `{backup-guid}/` containing
-`Backup.xml`, `bkupInfo.xml`, `gpreport.xml` (human-readable XML report —
-**start here when reviewing a diff**) and `DomainSysvol/` (the actual
-payload). `GptTmpl.inf` is UTF-16; add
+The committed artifacts under `gpos/<Name>/` are a verbatim `Backup-GPO`
+output: `manifest.xml` + `{backup-guid}/` containing `Backup.xml`,
+`bkupInfo.xml`, `gpreport.xml` (GPMC's XML report of every setting) and
+`DomainSysvol/` (the payload that is hashed and imported).
+
+**Never let Git convert these bytes.** The import hashes and deploys exactly
+what's committed, so line-ending or encoding conversion changes what lands
+in the domain. In the repository that stores your GPOs:
 
 ```gitattributes
-*.inf working-tree-encoding=UTF-16LE
-*.pol -text
+gpos/** -text
 ```
 
-to the consuming repo so security-settings diffs render as text and
-`registry.pol` is never newline-mangled.
+The cost is reviewability: `registry.pol` is binary and `GptTmpl.inf` and
+`gpreport.xml` are UTF-16, so pull-request diffs show them as binary, and a
+re-exported GPO's `{backup-guid}` folder is renamed, so a one-setting change
+shows as the folder removed and added. Until the backup commits a readable
+UTF-8 rendering per GPO (tracked issue), review a change with
+`Get-GPOReport` or by opening `gpreport.xml` locally.

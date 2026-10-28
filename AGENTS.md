@@ -17,12 +17,15 @@ precedence, filtering, WMI filters and status. Problem statement + decisions:
 
 ## ⚠️ Maturity — read before relying on it
 
-**Nothing here has run against a live AD domain yet.** There is no Molecule
-scenario because a domain controller can't run in a container. CI covers:
-ansible-lint/yamllint, ansible-test sanity, PowerShell parse +
-PSScriptAnalyzer, and a `cpassword` grep. The first lab-domain validation is
-tracked in the repo issues; until it closes, treat these as the known-blind
-spots:
+**Not yet green against a live AD domain.** The `domain_lab` Molecule
+scenario (`molecule/domain_lab/`, the `domain-lab` workflow) boots a real
+Windows Server 2022 VM under KVM, promotes it to a DC and runs both roles
+against it; it can't run on macOS. Other CI: ansible-lint/yamllint,
+ansible-test sanity (including pslint), PowerShell parse +
+PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs` workflow.
+Known gaps found by review are tracked as repo issues and listed in the
+README's "What this doesn't do (yet)". Until the lab run is green, treat
+these as the known-blind spots:
 
 - `msWMI-Som` creation (`msWMI-Parm2` encoding) — the first lab run's seed
   created one this way and GPMC found and linked it; the import's own
@@ -53,6 +56,12 @@ record surprises here as gotchas.
   combinations write backslash separators, which Linux `unzip` warns about
   and `unarchive` treats as failure). Entries use `/`; empty directories get
   explicit entries.
+- **Role variables are declared in `roles/*/meta/argument_specs.yml`** (the
+  reference, and what Ansible validates against). Required variables have no
+  entry in `defaults/main.yml`; every other variable's spec `default` must
+  equal its `defaults/main.yml` value. The `argument-specs` workflow
+  (`tests/argument_specs/`) enforces both. Add or change a variable in the
+  spec, defaults, README table and tasks together.
 - Release flow mirrors `ansible-collection-isc`: every merge that changes
   shipped files must bump `galaxy.yml` + add a `CHANGELOG.md` entry
   (CI-enforced). `release.yml` is **workflow_dispatch-only** until
@@ -73,6 +82,13 @@ yamllint . && ansible-lint
 # auto-fixes brace/whitespace/indentation findings (how 0.1.0 was styled):
 S=$(python3 -c 'import ansible_test, pathlib; print(pathlib.Path(ansible_test.__file__).parent / "_util/controller/sanity/pslint/settings.psd1")')
 pwsh -c "Invoke-ScriptAnalyzer -Path roles -Recurse -Settings '$S'"
+
+# argument specs (what the argument-specs workflow runs): build + install the
+# collection, render the role docs, check specs vs defaults and validation
+ansible-galaxy collection build --force --output-path /tmp/dist
+ansible-galaxy collection install /tmp/dist/git_cgallagher-gpo-*.tar.gz -p /tmp/colls --force
+ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-doc -t role git_cgallagher.gpo.gpo_import
+ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook tests/argument_specs/validate.yml
 
 # build the tarball
 ansible-galaxy collection build --force

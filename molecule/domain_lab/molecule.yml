@@ -46,10 +46,17 @@ provisioner:
         # checks (passed to both as JSON, and used by the YAML assertions).
         lab_fixture:
           ou: IacLab
-          group: GG-IacLab-Servers
+          group: GG-IacLab-Servers                     # security filtering target
+          server_admins_group: GG-IacLab-Server-Admins
+          ws_admins_group: GG-IacLab-Workstation-Admins
+          helpdesk_group: GG-IacLab-Helpdesk           # migration-table destination
           gpo_baseline: IacLab - Server Baseline
           gpo_rdp: IacLab - RDP Settings
-          gpo_password: IacLab - Password Policy
+          # Account policy only applies to domain accounts from a GPO linked at
+          # the domain root; this one sits above Default Domain Policy.
+          gpo_password: IacLab - Domain Password Policy
+          gpo_server_admins: IacLab - Server Local Admins       # GPP Local Users and Groups
+          gpo_ws_admins: IacLab - Workstation Local Admins      # Restricted Groups
           wmi_filter: IacLab Server OS
           wmi_description: Member servers and domain controllers
           wmi_namespace: 'root\CIMv2'

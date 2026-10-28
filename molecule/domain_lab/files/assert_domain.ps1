@@ -53,14 +53,33 @@ function Get-ApplyTrustee {
             ForEach-Object { $_.Trustee.Name } | Sort-Object)
 }
 
+function Get-GpoFile {
+    param($Gpo, [string]$RelativePath)
+    $file = Join-Path $env:SystemRoot ('SYSVOL\domain\Policies\{' + $Gpo.Id.ToString().ToUpperInvariant() + '}\' + $RelativePath)
+    if (Test-Path -LiteralPath $file) { Get-Content -LiteralPath $file -Raw } else { '' }
+}
+
+function Get-GroupSid {
+    param([string]$Name)
+    (Get-ADGroup -Identity $Name -Server $pdc).SID.Value
+}
+
 # --- links, precedence, inheritance ---------------------------------------------
 $expectedLinks = [ordered]@{
+    $rootDn = @(
+        "$($fx.gpo_password)|enforced=False|enabled=True"
+        'Default Domain Policy|enforced=False|enabled=True'
+    )
     $serversDn = @(
         "$($fx.gpo_baseline)|enforced=True|enabled=True"
         "$($fx.gpo_rdp)|enforced=False|enabled=True"
+        "$($fx.gpo_server_admins)|enforced=False|enabled=True"
     )
-    $workstationsDn = @("$($fx.gpo_rdp)|enforced=False|enabled=False")
-    $ouDn = @("$($fx.gpo_password)|enforced=False|enabled=True")
+    $workstationsDn = @(
+        "$($fx.gpo_rdp)|enforced=False|enabled=False"
+        "$($fx.gpo_ws_admins)|enforced=False|enabled=True"
+    )
+    $ouDn = @()
 }
 foreach ($target in $expectedLinks.Keys) {
     $got = Get-LinkList -Target $target
@@ -143,16 +162,45 @@ if ($rdp) {
     Test-Lab (($apply -join ',') -eq 'Authenticated Users') "rdp Apply trustees are [$($apply -join ', ')]"
 }
 
-# --- Password Policy: security settings content restored ---------------------------
+# --- Scenario: domain password + lockout policy (content restored) ------------------
+$secEditInf = 'Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf'
 $passwordGpo = Get-GpoOrNull -Name $fx.gpo_password
 Test-Lab ($null -ne $passwordGpo) "GPO '$($fx.gpo_password)' is missing"
 if ($passwordGpo) {
-    $inf = Join-Path $env:SystemRoot ('SYSVOL\domain\Policies\{' + $passwordGpo.Id.ToString().ToUpperInvariant() +
-        '}\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf')
-    $text = ''
-    if (Test-Path -LiteralPath $inf) { $text = Get-Content -LiteralPath $inf -Raw }
+    $text = Get-GpoFile -Gpo $passwordGpo -RelativePath $secEditInf
     $observed['password GptTmpl.inf'] = $text
-    Test-Lab ($text -match 'MinimumPasswordLength\s*=\s*14') "GptTmpl.inf does not set MinimumPasswordLength = 14"
+    Test-Lab ($text -match 'MinimumPasswordLength\s*=\s*14') 'password GPO does not set MinimumPasswordLength = 14'
+    Test-Lab ($text -match 'LockoutBadCount\s*=\s*5') 'password GPO does not set LockoutBadCount = 5'
+}
+
+# --- Scenario: local Administrators via GPP (additive) ------------------------------
+$serverAdminsSid = Get-GroupSid -Name $fx.server_admins_group
+$serverAdmins = Get-GpoOrNull -Name $fx.gpo_server_admins
+Test-Lab ($null -ne $serverAdmins) "GPO '$($fx.gpo_server_admins)' is missing"
+if ($serverAdmins) {
+    $text = Get-GpoFile -Gpo $serverAdmins -RelativePath 'Machine\Preferences\Groups\Groups.xml'
+    $observed['server local admins Groups.xml'] = $text
+    try {
+        $group = ([xml]$text).Groups.Group
+        $members = @($group.Properties.Members.Member)
+        $memberList = @($members | ForEach-Object { '{0} {1} {2}' -f $_.action, $_.name, $_.sid }) -join '; '
+        Test-Lab ($group.Properties.groupSid -eq 'S-1-5-32-544') "GPP item targets $($group.Properties.groupSid), want S-1-5-32-544"
+        Test-Lab ($members.Count -eq 1 -and $members[0].sid -eq $serverAdminsSid -and $members[0].action -eq 'ADD') `
+            "GPP local Administrators members are [$memberList], want ADD $($fx.server_admins_group) only"
+    }
+    catch {
+        [void]$failures.Add("Server Local Admins Groups.xml unreadable: $($_.Exception.Message)")
+    }
+}
+
+# --- Scenario: local Administrators via Restricted Groups (exact membership) --------
+$wsAdmins = Get-GpoOrNull -Name $fx.gpo_ws_admins
+Test-Lab ($null -ne $wsAdmins) "GPO '$($fx.gpo_ws_admins)' is missing"
+if ($wsAdmins) {
+    $text = Get-GpoFile -Gpo $wsAdmins -RelativePath $secEditInf
+    $observed['workstation local admins GptTmpl.inf'] = $text
+    $want = '*S-1-5-32-544__Members = *{0},*{1}' -f (Get-GroupSid -Name 'Domain Admins'), (Get-GroupSid -Name $fx.ws_admins_group)
+    Test-Lab ($text.Contains($want)) "Restricted Groups line missing: want '$want'"
 }
 
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)

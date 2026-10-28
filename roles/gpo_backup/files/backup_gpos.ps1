@@ -155,6 +155,25 @@ function ConvertFrom-WmiFilterParm2 {
     catch { $null }
 }
 
+function ConvertTo-RelativeDn {
+    # Link targets are stored relative to the domain root ('' = the root
+    # itself), so the manifest imports into a domain with another name.
+    param([string]$Dn, [string]$RootDn)
+    if ($Dn -ieq $RootDn) { return '' }
+    $suffix = ',' + $RootDn
+    if ($Dn.EndsWith($suffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $Dn.Substring(0, $Dn.Length - $suffix.Length)
+    }
+    throw "'$Dn' is not inside '$RootDn'"
+}
+
+function Test-Denied {
+    # A Deny entry (typically "Deny Apply group policy" to exclude admins) must
+    # never be mistaken for an Apply grant.
+    param($Permission)
+    [bool]($Permission.PSObject.Properties['Denied'] -and $Permission.Denied)
+}
+
 function Get-TrusteeEntry {
     # Store trustees domain-relative so the manifest imports into any domain
     # following the same naming convention (relative-name mapping).
@@ -212,6 +231,7 @@ if ($GpoNames.Count -gt 0) {
 
 $safeSeen = @{}
 $shipped = New-Object System.Collections.ArrayList
+$backupErrors = New-Object System.Collections.ArrayList
 $newState = @{ gpos = @{}; manifest_hash = '' }
 
 foreach ($gpo in $live) {
@@ -222,12 +242,20 @@ foreach ($gpo in $live) {
     }
     $safeSeen[$safe.ToLowerInvariant()] = $gpo.DisplayName
 
-    $rawDir = Join-Path $rawRoot $safe
-    New-Item -ItemType Directory -Path $rawDir -Force | Out-Null
-    Backup-GPO -Guid $gpo.Id -Domain $Domain -Server $pdc -Path $rawDir `
-        -Comment 'git_cgallagher.gpo export' | Out-Null
-
-    $hash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $rawDir)
+    # One broken GPO (missing SYSVOL folder, unreadable ACL) must not hide the
+    # others: collect every failure, then fail the run without saving state.
+    try {
+        $rawDir = Join-Path $rawRoot $safe
+        New-Item -ItemType Directory -Path $rawDir -Force | Out-Null
+        Backup-GPO -Guid $gpo.Id -Domain $Domain -Server $pdc -Path $rawDir `
+            -Comment 'git_cgallagher.gpo export' | Out-Null
+        $hash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $rawDir)
+    }
+    catch {
+        [void]$backupErrors.Add("GPO '$($gpo.DisplayName)': $($_.Exception.Message)")
+        $newState.gpos[$gpo.DisplayName] = @{ hash = ''; dir = $safe }
+        continue
+    }
     $newState.gpos[$gpo.DisplayName] = @{ hash = $hash; dir = $safe }
 
     $prev = $null
@@ -253,6 +281,8 @@ if ($GpoNames.Count -eq 0) {
 $manifest = [ordered]@{
     domain = $Domain
     netbios = $netbios
+    root_dn = $rootDn
+    domain_sid = $adDomain.DomainSID.Value
     gpos = [ordered]@{}
     wmi_filters = [ordered]@{}
     soms = @()
@@ -261,17 +291,27 @@ $manifest = [ordered]@{
 foreach ($gpo in $live) {
     $wmiName = $null
     if ($gpo.WmiFilter) { $wmiName = $gpo.WmiFilter.Name }
+    $perms = @(Get-GPPermission -Guid $gpo.Id -All -Domain $Domain -Server $pdc)
     $applyTo = @(
-        Get-GPPermission -Guid $gpo.Id -All -Domain $Domain -Server $pdc |
-            Where-Object { [string]$_.Permission -eq 'GpoApply' } |
+        $perms | Where-Object { [string]$_.Permission -eq 'GpoApply' -and -not (Test-Denied $_) } |
             ForEach-Object { Get-TrusteeEntry -Permission $_ -NetBiosName $netbios } |
             Sort-Object { $_['name'] }
+    )
+    # Recorded so they're visible in Git and checked on import; this
+    # collection can't create Deny entries (Set-GPPermission has no deny).
+    $denied = @(
+        $perms | Where-Object { Test-Denied $_ } | ForEach-Object {
+            $trustee = Get-TrusteeEntry -Permission $_ -NetBiosName $netbios
+            $trustee['permission'] = [string]$_.Permission
+            $trustee
+        } | Sort-Object { $_['name'] }
     )
     $manifest.gpos[$gpo.DisplayName] = [ordered]@{
         backup_dir = $newState.gpos[$gpo.DisplayName].dir
         status = $gpo.GpoStatus.ToString()
         wmi_filter = $wmiName
         apply_to = $applyTo
+        denied = $denied
     }
 }
 
@@ -316,7 +356,7 @@ foreach ($dn in $somDns) {
     )
     if ($links.Count -gt 0 -or $blocked) {
         $manifest.soms += , ([ordered]@{
-                target = $dn
+                target = ConvertTo-RelativeDn -Dn $dn -RootDn $rootDn
                 block_inheritance = $blocked
                 links = $links
             })
@@ -335,7 +375,9 @@ if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force 
 New-ZipFromDirectory -Source $exportRoot -Destination $zipPath
 
 $changed = ($shipped.Count -gt 0) -or ($deleted.Count -gt 0) -or $manifestChanged
-if (-not $checkMode) {
+# A failed GPO must not be "used up": with errors, keep the old state so the
+# next run re-exports everything that changed.
+if (-not $checkMode -and $backupErrors.Count -eq 0) {
     $stateOut = [ordered]@{ gpos = [ordered]@{}; manifest_hash = $newState.manifest_hash }
     foreach ($name in ($newState.gpos.Keys | Sort-Object)) {
         $stateOut.gpos[$name] = [ordered]@{
@@ -354,12 +396,15 @@ $result = @{
     gpo_count = @($live).Count
     zip = $zipPath
     server = $pdc
+    errors = @($backupErrors)
 }
 
 if ($inAnsible) {
     $Ansible.Changed = $changed
     $Ansible.Result = $result
+    if ($backupErrors.Count -gt 0) { $Ansible.Failed = $true }
 }
 else {
     $result | ConvertTo-Json -Depth 6
+    if ($backupErrors.Count -gt 0) { throw "gpo_backup failed for $($backupErrors.Count) GPO(s); see result.errors" }
 }

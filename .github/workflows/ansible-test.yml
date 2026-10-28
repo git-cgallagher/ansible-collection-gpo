@@ -123,9 +123,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - name: Refuse cpassword in any committed XML
+      # Only a non-empty value is a secret: GPP writes cpassword="" on items
+      # that set no password.
+      - name: Refuse a GPP cpassword in any committed XML
         run: |
-          hits=$(grep -RiIl --include='*.xml' cpassword . || true)
+          hits=$(grep -RiIlE --include='*.xml' 'cpassword="[^"]+"' . || true)
           if [ -n "$hits" ]; then
             echo "::error::cpassword found in: $hits"
             exit 1

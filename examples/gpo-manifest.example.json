@@ -1,6 +1,8 @@
 {
   "domain": "lab.example.com",
   "netbios": "LAB",
+  "root_dn": "DC=lab,DC=example,DC=com",
+  "domain_sid": "S-1-5-21-1111111111-2222222222-3333333333",
   "gpos": {
     "CFG - RDP Settings": {
       "backup_dir": "CFG - RDP Settings",
@@ -8,7 +10,17 @@
       "wmi_filter": null,
       "apply_to": [
         { "name": "Authenticated Users", "type": "Group" }
-      ]
+      ],
+      "denied": []
+    },
+    "SEC - Domain Password Policy": {
+      "backup_dir": "SEC - Domain Password Policy",
+      "status": "AllSettingsEnabled",
+      "wmi_filter": null,
+      "apply_to": [
+        { "name": "Authenticated Users", "type": "Group" }
+      ],
+      "denied": []
     },
     "SEC - Server Baseline": {
       "backup_dir": "SEC - Server Baseline",
@@ -16,6 +28,9 @@
       "wmi_filter": "Server OS only",
       "apply_to": [
         { "name": "GG-Servers-Prod", "type": "Group" }
+      ],
+      "denied": [
+        { "name": "GG-Tier0-Admins", "type": "Group", "permission": "GpoApply" }
       ]
     }
   },
@@ -29,14 +44,15 @@
   },
   "soms": [
     {
-      "target": "DC=lab,DC=example,DC=com",
+      "target": "",
       "block_inheritance": false,
       "links": [
+        { "gpo": "SEC - Domain Password Policy", "enforced": false, "enabled": true },
         { "gpo": "Default Domain Policy", "enforced": false, "enabled": true }
       ]
     },
     {
-      "target": "OU=Servers,DC=lab,DC=example,DC=com",
+      "target": "OU=Servers",
       "block_inheritance": false,
       "links": [
         { "gpo": "SEC - Server Baseline", "enforced": true, "enabled": true },

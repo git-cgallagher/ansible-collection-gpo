@@ -1,0 +1,52 @@
+name: argument-specs
+
+# Validates the roles' meta/argument_specs.yml against the *built and
+# installed* collection (so the specs must actually ship): every spec renders
+# with ansible-doc, agrees with defaults/main.yml, and makes the roles reject
+# bad input before any task touches a host. See tests/argument_specs/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  argument-specs:
+    runs-on: ubuntu-latest
+    env:
+      PY_COLORS: '1'
+      ANSIBLE_FORCE_COLOR: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - run: pip install ansible-core
+
+      - name: Build and install the collection
+        run: |
+          ansible-galaxy collection build --force --output-path "$RUNNER_TEMP/dist"
+          ansible-galaxy collection install "$RUNNER_TEMP"/dist/git_cgallagher-gpo-*.tar.gz -p "$RUNNER_TEMP/collections"
+
+      - name: Render each role's documentation from its spec
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
+        run: |
+          ansible-doc -t role -l git_cgallagher.gpo
+          for role in gpo_backup gpo_import; do
+            ansible-doc -t role "git_cgallagher.gpo.$role" > /dev/null
+            echo "ok: git_cgallagher.gpo.$role"
+          done
+
+      - name: Check specs against defaults and exercise validation
+        env:
+          ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
+        run: ansible-playbook tests/argument_specs/validate.yml

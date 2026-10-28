@@ -12,16 +12,19 @@ on `ubuntu-latest` (~40 minutes).
 |---|---|---|
 | create | Download the box (cached, SHA-256 pinned), boot it, wait for its first boot to finish | WinRM/PSRP answers *and* the box's setup script is gone |
 | prepare | Promote to DC; reboot until ADWS, SYSVOL and GPMC all answer | — |
-| | Seed the authored state (`files/lab_fixture.ps1 -Action Seed`) and export it with `gpo_backup` | Manifest has the exact link order, enforced/disabled links, block-inheritance, security filtering, WMI filter and GPO status; every GPO has a backup folder |
+| | Seed the authored state (`files/lab_fixture.ps1 -Action Seed`): five GPOs including the [real-world scenarios](../../docs/scenarios.md) | The seeded domain password policy, linked above Default Domain Policy, is the *effective* policy (14 characters, lockout at 5) |
+| | Export it with `gpo_backup` | Manifest has the exact link order (domain root included), enforced/disabled links, block-inheritance, security filtering, WMI filter and GPO status; every GPO has a backup folder |
 | | Export again | Nothing ships (backup idempotence) |
-| | Drift the domain out-of-band (`-Action Drift`) | — |
+| | Drift the domain out-of-band (`-Action Drift`): delete a GPO, reorder the domain root, add Domain Users to the servers' local Administrators preference, unlink the Restricted Groups GPO, and more | Default Domain Policy's weaker settings now win (7 characters, no lockout) |
 | | `gpo_import` in report-only mode | Plans the drift's fixes; touches nothing |
 | | `gpo_import` on a copy with a GPP `cpassword` planted | Refuses |
 | converge | `gpo_import` from the export | — |
 | idempotence | Converge again | No task reports a change |
-| verify | `files/assert_domain.ps1` reads the domain through GPMC and AD | Links, precedence, inheritance, status, filtering (Authenticated Users kept at Read), WMI filter (GPMC's own parser reads the query back), and settings of three types: Admin Templates, Preferences and security settings (`GptTmpl.inf`) |
+| verify | `files/assert_domain.ps1` reads the domain through GPMC and AD | Links, precedence, inheritance, status, filtering (Authenticated Users kept at Read), WMI filter (GPMC's own parser reads the query back), and settings of four types: Admin Templates, Preferences (incl. local Administrators), security settings and Restricted Groups |
+| | Read the effective domain password policy | Back to 14 characters and lockout at 5 |
 | | `gpo_import` report-only again | Zero planned actions |
 | | Re-export twice | Manifest identical to the pre-drift export; the second export ships nothing |
+| | Build a migration table with GPMC's API and import the Restricted Groups GPO through it, then again without it | The table rewrote the member's SID; the plain import restored it |
 
 The fixture uses GPMC's own APIs wherever one exists (WMI filter linking,
 links, permissions, status), so the roles are checked against GPMC rather

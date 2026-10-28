@@ -1,10 +1,12 @@
 ---
-- name: Assert required variables
+# meta/argument_specs.yml makes Ansible check types and required variables
+# before this runs; a spec can't express "non-empty", so check that here.
+- name: Require a non-empty domain and repo directory
   ansible.builtin.assert:
     that:
-      - gpo_backup_domain | length > 0
-      - gpo_backup_repo_dir | length > 0
-    fail_msg: gpo_backup_domain and gpo_backup_repo_dir are required
+      - gpo_backup_domain | default('') | length > 0
+      - gpo_backup_repo_dir | default('') | length > 0
+    fail_msg: gpo_backup_domain and gpo_backup_repo_dir must be non-empty
     quiet: true
 
 # Read-only against AD; writes only its working directory on the management
@@ -42,6 +44,7 @@
         suffix: gpo-export
       register: gpo_backup_tmp
       delegate_to: localhost
+      become: false
 
     - name: Fetch the export zip
       ansible.builtin.fetch:
@@ -55,6 +58,7 @@
         state: directory
         mode: '0755'
       delegate_to: localhost
+      become: false
 
     # A re-backup gets a fresh {backup-guid} subfolder; the previous one must
     # not linger next to it in the repo.
@@ -66,6 +70,7 @@
       loop_control:
         label: "{{ item.name }}"
       delegate_to: localhost
+      become: false
 
     - name: Unpack the export into the repo
       ansible.builtin.unarchive:
@@ -73,6 +78,7 @@
         dest: "{{ gpo_backup_repo_dir }}"
         remote_src: true
       delegate_to: localhost
+      become: false
 
     - name: Prune folders of deleted GPOs
       ansible.builtin.file:
@@ -82,9 +88,11 @@
       loop_control:
         label: "{{ item.name }}"
       delegate_to: localhost
+      become: false
 
     - name: Remove the controller staging directory
       ansible.builtin.file:
         path: "{{ gpo_backup_tmp.path }}"
         state: absent
       delegate_to: localhost
+      become: false
