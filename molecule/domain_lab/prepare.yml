@@ -61,6 +61,26 @@
           } catch { exit 1 }
       when: lab_forest.reboot_required | default(false)
 
+    # The share being up isn't enough: Group Policy Preferences (and other
+    # GPMC writes) go through the *domain's* DFS path, which needs the DFS
+    # referral service. Right after promotion that path can still fail with
+    # "The network path was not found" (it failed one CI run 6 s after the
+    # reboot check passed).
+    - name: Wait until the domain SYSVOL path (\\domain\SYSVOL) resolves
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain)
+          $Ansible.Changed = $false
+          if (-not (Test-Path -LiteralPath "\\$Domain\SYSVOL\$Domain\Policies")) {
+              throw "\\$Domain\SYSVOL\$Domain\Policies doesn't resolve yet"
+          }
+        parameters:
+          Domain: "{{ lab_domain }}"
+      register: lab_sysvol_path
+      until: lab_sysvol_path is succeeded
+      retries: 60
+      delay: 10
+
     - name: Make the connection account a Domain Admin and GPO creator
       ansible.windows.win_powershell:
         script: |

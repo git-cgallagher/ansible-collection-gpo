@@ -114,6 +114,11 @@ ansible-galaxy collection build --force
   nothing). Matters for the "adopt without reimporting" design (issue #9).
 - **`Import-GPO` restores GPO status** (the computer/user halves), unlike
   links, filtering and the WMI filter link.
+- **After promoting a DC, wait for `\\<domain>\SYSVOL` itself**, not just
+  the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
+  through the domain's DFS path, which failed with "The network path was not
+  found" in one lab run 6 seconds after the other checks passed.
+  `prepare.yml` polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).
