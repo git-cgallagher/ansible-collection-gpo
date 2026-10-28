@@ -1,0 +1,11 @@
+---
+# Export the authoring (lab) domain's GPOs into the repo working copy, then
+# review `git diff` and open a PR.
+- name: Export GPOs to the repo
+  hosts: gpo_mgmt_lab
+  gather_facts: false
+  roles:
+    - role: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: lab.example.com
+        gpo_backup_repo_dir: "{{ playbook_dir }}/../gpo-repo"

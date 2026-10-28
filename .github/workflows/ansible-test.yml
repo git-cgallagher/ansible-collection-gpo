@@ -1,0 +1,131 @@
+name: ansible-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PY_COLORS: '1'
+  ANSIBLE_FORCE_COLOR: '1'
+
+jobs:
+  # Every merge to main is releasable (release.yml), so a PR that changes
+  # anything shipped in the collection must bump galaxy.yml's version and add
+  # a CHANGELOG entry. Galaxy versions can't be re-uploaded.
+  version-bump:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a version bump for shipped changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Paths that are NOT in the tarball (galaxy.yml build_ignore).
+          ignore='^(\.github/|tests/|AGENTS\.md$|\.ansible-lint$|\.yamllint$|\.gitignore$)'
+          shipped=$(git diff --name-only "$BASE"...HEAD | grep -Ev "$ignore" || true)
+          if [ -z "$shipped" ]; then echo "No shipped files changed; no release needed."; exit 0; fi
+          echo "Shipped files changed:"; echo "$shipped" | sed 's/^/  /'
+          ver() { python3 -c 'import sys,yaml; print(yaml.safe_load(sys.stdin)["version"])'; }
+          # The base of the very first PR has no galaxy.yml yet.
+          if git cat-file -e "$BASE:galaxy.yml" 2>/dev/null; then
+            old=$(git show "$BASE:galaxy.yml" | ver)
+          else
+            old=0.0.0
+          fi
+          new=$(ver < galaxy.yml)
+          if [ "$old" = "$new" ]; then
+            echo "::error file=galaxy.yml::Shipped content changed but version is still $old. Bump galaxy.yml (semver) and add a CHANGELOG.md entry."
+            exit 1
+          fi
+          python3 - "$old" "$new" <<'PY'
+          import sys
+          o, n = (tuple(int(x) for x in v.split('.')) for v in sys.argv[1:3])
+          sys.exit(0 if n > o else f"::error file=galaxy.yml::Version must increase ({sys.argv[1]} -> {sys.argv[2]})")
+          PY
+          grep -Eq "^## $new( |$)" CHANGELOG.md || { echo "::error file=CHANGELOG.md::No '## $new' entry"; exit 1; }
+          echo "OK: $old -> $new"
+
+  sanity:
+    name: sanity (${{ matrix.ansible-core-version }})
+    runs-on: ubuntu-latest
+    # devel is an early warning, never a merge gate.
+    continue-on-error: ${{ matrix.ansible-core-version == 'devel' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ansible-core-version: [stable-2.18, stable-2.19, stable-2.20, stable-2.21, devel]
+    steps:
+      - uses: ansible-community/ansible-test-gh-action@6ded727edb598e670ac056a8e680ca4050bac0a3  # v1.18.0
+        with:
+          ansible-core-version: ${{ matrix.ansible-core-version }}
+          testing-type: sanity
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+      - run: |
+          pip install ansible-core ansible-lint yamllint
+          ansible-galaxy collection install -r requirements.yml
+      - run: yamllint .
+      - run: ansible-lint
+
+  powershell:
+    # The roles' PowerShell runs on Windows hosts CI doesn't have, so at
+    # minimum: parse every script (a syntax error must not ship green) and
+    # gate on PSScriptAnalyzer errors; warnings are printed for review.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Parse scripts and run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem roles -Recurse -Filter '*.ps1'
+          if (-not $files) { throw 'No PowerShell scripts found; did the layout change?' }
+          $failed = $false
+          foreach ($f in $files) {
+            $tokens = $null; $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            foreach ($e in @($parseErrors)) {
+              Write-Host "::error file=$($f.FullName),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path roles -Recurse -Severity Warning, Error
+          $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
+          if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
+
+  hygiene:
+    # GPO backups are XML; a committed backup fixture carrying a GPP
+    # cpassword (a decryptable secret) must never ship.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse cpassword in any committed XML
+        run: |
+          hits=$(grep -RiIl --include='*.xml' cpassword . || true)
+          if [ -n "$hits" ]; then
+            echo "::error::cpassword found in: $hits"
+            exit 1
+          fi
+          echo "No cpassword in committed XML."

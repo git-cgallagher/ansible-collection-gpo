@@ -1,0 +1,3 @@
+collections:
+  - name: ansible.windows   # win_powershell, win_copy, win_file on the management host
+    version: '>=2.0.0'

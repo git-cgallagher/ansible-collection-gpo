@@ -1,0 +1,44 @@
+---
+# DNS name of the target domain (required).
+gpo_import_domain: ''
+
+# DC to run against; empty = the domain's PDC emulator, which avoids
+# AD-vs-SYSVOL replication races.
+gpo_import_server: ''
+
+# Controller-side directory holding gpos/ and the manifest — normally your
+# repo working copy (required).
+gpo_import_source_dir: ''
+
+# Manifest path, relative to the source dir.
+gpo_import_manifest: 'gpo-manifest.json'
+
+# Migration table for cross-domain imports: path relative to the source dir
+# (so commit one per target environment), or absolute on the management host.
+gpo_import_migration_table: ''
+
+# Report every action without touching the domain (plan mode). Ansible
+# --check implies it.
+gpo_import_report_only: false
+
+# On manifest-managed containers, remove links that aren't in the manifest.
+# Leave false while adopting an existing domain.
+gpo_import_remove_unmanaged_links: false
+
+# Create WMI filters named in the manifest when they don't exist in the
+# target domain (single-query filters only).
+gpo_import_create_wmi_filters: false
+
+# Re-import every GPO regardless of recorded state. Note the first run in a
+# domain imports everything once anyway (no state yet), bumping GPO versions.
+gpo_import_force: false
+
+# Limit the run to these GPO display names (empty = the whole manifest).
+# Links are still reconciled for every manifest container.
+gpo_import_gpos: []
+
+# Staging directory on the management host (the export tree is copied here).
+gpo_import_workdir: 'C:\ProgramData\gpo-iac\import'
+
+# Where the per-domain state file (last-imported content hashes) lives.
+gpo_import_state_dir: 'C:\ProgramData\gpo-iac'

@@ -1,0 +1,47 @@
+---
+- name: Assert required variables
+  ansible.builtin.assert:
+    that:
+      - gpo_import_domain | length > 0
+      - gpo_import_source_dir | length > 0
+    fail_msg: gpo_import_domain and gpo_import_source_dir are required
+    quiet: true
+
+# Staging tasks run even in --check (the convergence script needs the files
+# to compute its plan); the script itself then runs report-only.
+- name: Clear the staging directory
+  ansible.windows.win_file:
+    path: '{{ gpo_import_workdir }}\stage'
+    state: absent
+  check_mode: false
+
+- name: Stage the export on the management host   # win_copy is file-by-file; large estates take a while
+  ansible.windows.win_copy:
+    src: "{{ gpo_import_source_dir }}/"
+    dest: '{{ gpo_import_workdir }}\stage\'
+  check_mode: false
+
+- name: Import GPOs and reconcile topology
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', role_path ~ '/files/import_gpos.ps1') }}"
+    parameters:
+      Domain: "{{ gpo_import_domain }}"
+      Server: "{{ gpo_import_server }}"
+      SourceDir: '{{ gpo_import_workdir }}\stage'
+      ManifestPath: "{{ gpo_import_manifest }}"
+      MigrationTablePath: "{{ gpo_import_migration_table }}"
+      StateDir: "{{ gpo_import_state_dir }}"
+      ReportOnly: "{{ gpo_import_report_only | bool or ansible_check_mode }}"
+      RemoveUnmanagedLinks: "{{ gpo_import_remove_unmanaged_links | bool }}"
+      CreateWmiFilters: "{{ gpo_import_create_wmi_filters | bool }}"
+      ForceImport: "{{ gpo_import_force | bool }}"
+      GpoNames: "{{ gpo_import_gpos }}"
+  register: gpo_import_run
+  check_mode: false
+
+- name: Report actions and warnings
+  ansible.builtin.debug:
+    msg:
+      - "report_only: {{ gpo_import_run.result.report_only }}"
+      - "actions: {{ gpo_import_run.result.actions }}"
+      - "warnings: {{ gpo_import_run.result.warnings }}"

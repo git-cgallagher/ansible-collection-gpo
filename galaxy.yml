@@ -1,0 +1,33 @@
+namespace: git_cgallagher
+name: gpo
+version: 0.1.0
+readme: README.md
+authors:
+  - Chris Gallagher (@git-cgallagher)
+description: >-
+  Windows Group Policy as code: export domain GPOs with their links,
+  precedence, filtering and WMI filters to Git, and import them into a
+  target domain via Backup-GPO/Import-GPO plus a declarative manifest.
+license:
+  - MIT
+tags:
+  - windows
+  - gpo
+  - grouppolicy
+  - activedirectory
+  - iac
+dependencies:
+  ansible.windows: '>=2.0.0'
+repository: https://github.com/git-cgallagher/ansible-collection-gpo
+documentation: https://github.com/git-cgallagher/ansible-collection-gpo#readme
+issues: https://github.com/git-cgallagher/ansible-collection-gpo/issues
+build_ignore:
+  - .github
+  - .ansible
+  - collections
+  - tests
+  - '*.tar.gz'
+  - .ansible-lint
+  - .yamllint
+  - .gitignore
+  - AGENTS.md

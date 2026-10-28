@@ -1,0 +1,47 @@
+{
+  "domain": "lab.example.com",
+  "netbios": "LAB",
+  "gpos": {
+    "CFG - RDP Settings": {
+      "backup_dir": "CFG - RDP Settings",
+      "status": "ComputerSettingsOnly",
+      "wmi_filter": null,
+      "apply_to": [
+        { "name": "Authenticated Users", "type": "Group" }
+      ]
+    },
+    "SEC - Server Baseline": {
+      "backup_dir": "SEC - Server Baseline",
+      "status": "AllSettingsEnabled",
+      "wmi_filter": "Server OS only",
+      "apply_to": [
+        { "name": "GG-Servers-Prod", "type": "Group" }
+      ]
+    }
+  },
+  "wmi_filters": {
+    "Server OS only": {
+      "description": "Member servers and DCs, not workstations",
+      "namespace": "root\\CIMv2",
+      "query": "SELECT * FROM Win32_OperatingSystem WHERE ProductType > 1",
+      "raw_parm2": "1;3;10;60;WQL;root\\CIMv2;SELECT * FROM Win32_OperatingSystem WHERE ProductType > 1;"
+    }
+  },
+  "soms": [
+    {
+      "target": "DC=lab,DC=example,DC=com",
+      "block_inheritance": false,
+      "links": [
+        { "gpo": "Default Domain Policy", "enforced": false, "enabled": true }
+      ]
+    },
+    {
+      "target": "OU=Servers,DC=lab,DC=example,DC=com",
+      "block_inheritance": false,
+      "links": [
+        { "gpo": "SEC - Server Baseline", "enforced": true, "enabled": true },
+        { "gpo": "CFG - RDP Settings", "enforced": false, "enabled": true }
+      ]
+    }
+  ]
+}
