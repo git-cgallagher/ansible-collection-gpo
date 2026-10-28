@@ -1,0 +1,8 @@
+collections/
+.ansible/
+tests/output/
+*.tar.gz
+*.retry
+.cache/
+__pycache__/
+.DS_Store
