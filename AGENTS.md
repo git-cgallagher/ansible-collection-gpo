@@ -139,6 +139,10 @@ ansible-galaxy collection build --force
   aligned `=` columns, 4-space pipeline indentation. PR #1 (the initial
   collection PR) failed all five sanity jobs on 72 style findings; the fix is
   the `Invoke-Formatter` command above, not hand-editing.
+- **On a pull request, `domain-lab`'s `paths:` filter matches the whole PR
+  diff, not the pushed commit.** Once a PR touches `roles/**` or
+  `molecule/**`, every push to it re-runs the 14-minute lab, docs-only
+  pushes included (PR #1's last docs commit did). Batch the doc edits.
 - `Import-GPO` **replaces the whole GPO** and bumps its version (clients
   reprocess). That's why both roles hash content and keep state files
   (`C:\ProgramData\gpo-iac\*-state-<domain>.json` on the management host) —

@@ -4,7 +4,7 @@ Molecule boots a Windows Server 2022 VM under QEMU/KVM, promotes it to the
 first DC of a new forest (`gpolab.test`), and runs `gpo_backup` and
 `gpo_import` against it for real. CI runs it in
 [`.github/workflows/domain-lab.yml`](../../.github/workflows/domain-lab.yml)
-on `ubuntu-latest` (~40 minutes).
+on `ubuntu-latest` (about 14 minutes).
 
 ## What it proves
 
@@ -15,7 +15,7 @@ on `ubuntu-latest` (~40 minutes).
 | | Seed the authored state (`files/lab_fixture.ps1 -Action Seed`): five GPOs including the [real-world scenarios](../../docs/scenarios.md) | The seeded domain password policy, linked above Default Domain Policy, is the *effective* policy (14 characters, lockout at 5) |
 | | Export it with `gpo_backup` | Manifest has the exact link order (domain root included), enforced/disabled links, block-inheritance, security filtering, WMI filter and GPO status; every GPO has a backup folder |
 | | Export again | Nothing ships (backup idempotence) |
-| | Drift the domain out-of-band (`-Action Drift`): delete a GPO, reorder the domain root, add Domain Users to the servers' local Administrators preference, unlink the Restricted Groups GPO, and more | Default Domain Policy's weaker settings now win (7 characters, no lockout) |
+| | Drift the domain out-of-band (`-Action Drift`): delete a GPO and the WMI filter, reorder the domain root, add Domain Users to the servers' local Administrators preference, unlink the Restricted Groups GPO, and more | Default Domain Policy's weaker settings now win (7 characters, no lockout) |
 | | `gpo_import` in report-only mode | Plans the drift's fixes; touches nothing |
 | | `gpo_import` on a copy with a GPP `cpassword` planted | Refuses |
 | converge | `gpo_import` from the export | — |

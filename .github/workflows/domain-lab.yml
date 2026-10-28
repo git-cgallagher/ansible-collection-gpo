@@ -2,11 +2,11 @@ name: domain-lab
 
 # End-to-end test against a real Windows Server 2022 domain controller:
 # Molecule boots the VM under QEMU/KVM on the runner, promotes it to the first
-# DC of a new forest, and runs gpo_backup / gpo_import against it. ~40 min.
+# DC of a new forest, and runs gpo_backup / gpo_import against it. About 14 min.
 #
 # Not a required check: it is path-filtered (a required check that doesn't run
 # blocks merges forever) and depends on a third-party box download. Promote it
-# to required only after a run of consecutive green scheduled runs (AGENTS.md).
+# to required after four consecutive green weekly runs (AGENTS.md).
 
 on:
   pull_request:
