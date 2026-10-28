@@ -17,27 +17,37 @@ precedence, filtering, WMI filters and status. Problem statement + decisions:
 
 ## ⚠️ Maturity — read before relying on it
 
-**Not yet green against a live AD domain.** The `domain_lab` Molecule
-scenario (`molecule/domain_lab/`, the `domain-lab` workflow) boots a real
-Windows Server 2022 VM under KVM, promotes it to a DC and runs both roles
-against it; it can't run on macOS. Other CI: ansible-lint/yamllint,
-ansible-test sanity (including pslint), PowerShell parse +
-PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs` workflow.
-Known gaps found by review are tracked as repo issues and listed in the
-README's "What this doesn't do (yet)". Until the lab run is green, treat
-these as the known-blind spots:
+**Lab-tested within one domain.** The `domain_lab` Molecule scenario
+(`molecule/domain_lab/`, the `domain-lab` workflow) boots a real Windows
+Server 2022 VM under KVM, promotes it to a DC and runs both roles against
+it: seed, export, out-of-band drift, report-only plan, import, verify,
+re-export round trip, and an import through a migration table. It first
+passed on 2026-10-28 (PR #1, the initial collection), which closed the
+lab-validation issue (#2). It can't run on macOS. Other CI:
+ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
+parse + PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs`
+workflow. Known gaps found by review are tracked as repo issues and listed
+in the README's "What this doesn't do (yet)".
 
-- `msWMI-Som` creation (`msWMI-Parm2` encoding) — the first lab run's seed
-  created one this way and GPMC found and linked it; the import's own
-  creation path is still unverified.
-- `Backup-GPO`-folder-per-GPO layout assumptions (`manifest.xml` +
-  single `{guid}` dir) and `Import-GPO -BackupGpoName` against it.
-- `Get-GPInheritance`/`Set-GPLink` property shapes (`GpoInheritanceBlocked`,
-  Yes/No enums) and the link-order work-list reconciliation.
-- Multi-query WMI filters (parser/encoder handle the single-query form).
+Not covered by the lab yet (issue #16 unless noted):
 
-When validating, fix the scripts — don't bend the lab to the scripts — and
-record surprises here as gotchas.
+- importing into a *different* domain: link targets rebased onto another
+  root DN, domain-relative trustee names, a migration table between domains
+- `--check` runs (`gpo_import` maps check mode onto report-only, which is
+  covered; `gpo_backup` has its own check-mode path)
+- security filtering on trustees other than domain groups and Authenticated
+  Users, and Deny entries (the lab's GPOs have none)
+- a member-server management host and a least-privilege account (#15);
+  multi-query WMI filters aren't supported (#13)
+
+`domain-lab` is deliberately not a required check: it's path-filtered (a
+required check that never starts blocks merges forever) and depends on a
+third-party box download. Promote it after four consecutive green weekly
+runs, and replace the path filter with a job that always reports and skips
+the lab when nothing relevant changed.
+
+When the lab disagrees with the scripts, fix the scripts — don't bend the
+lab to the scripts — and record the surprise below as a gotcha.
 
 ## Conventions
 
@@ -65,9 +75,9 @@ record surprises here as gotchas.
 - Release flow mirrors `ansible-collection-isc`: every merge that changes
   shipped files must bump `galaxy.yml` + add a `CHANGELOG.md` entry
   (CI-enforced). `release.yml` is **workflow_dispatch-only** until
-  `GALAXY_API_KEY` exists in a main-only `galaxy` environment and the
-  collection has been lab-validated — then restore the `workflow_run`
-  trigger (see the tracking issue).
+  `GALAXY_API_KEY` exists in a main-only `galaxy` environment (issue #3);
+  the lab validation it also waited for passed on 2026-10-28. Then restore
+  the `workflow_run` trigger.
 
 ## Commands
 

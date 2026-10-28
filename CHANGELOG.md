@@ -1,9 +1,11 @@
 # Changelog
 
-## 0.1.0 — 2026-10-27
+## 0.1.0 — 2026-10-28
 
-Initial release of `git_cgallagher.gpo`. **Not yet validated against a live
-domain** — see the tracking issue before using in anger.
+Initial release of `git_cgallagher.gpo`, tested end to end against a real
+Windows Server 2022 domain controller in CI (`molecule/domain_lab`), within
+one domain. Importing into a different domain isn't lab-tested yet (issue
+#16).
 
 - `gpo_backup`: exports every GPO in a domain (`Backup-GPO`, one
   self-contained backup folder per GPO) plus a `gpo-manifest.json` capturing

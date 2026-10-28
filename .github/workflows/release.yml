@@ -4,9 +4,9 @@ name: release
 #   - publishes galaxy.yml's version if Galaxy doesn't have it yet
 #   - creates the v<version> tag + GitHub release if they are missing
 #
-# ⚠️ Manual-only for now: the collection hasn't been validated against a live
-# domain and GALAXY_API_KEY isn't set in the main-only 'galaxy' environment.
-# Once both are done (see the tracking issue), restore the isc-style triggers:
+# ⚠️ Manual-only until GALAXY_API_KEY is set in the main-only 'galaxy'
+# environment (issue #3). The lab validation it also waited for passed on
+# 2026-10-28. Once the key exists, restore the isc-style triggers:
 #
 #   workflow_run:
 #     workflows: [ansible-test]

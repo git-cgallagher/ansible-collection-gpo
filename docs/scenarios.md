@@ -151,7 +151,7 @@ $table.Save('C:\work\prod.migtable')
 filter) write the helpdesk group's SID into `[Group Membership]`; importing
 again without the table restores the original. Importing into a genuinely
 separate forest needs a second domain controller and isn't covered by the
-lab yet.
+lab yet (issue #16).
 
 ## Not covered (yet)
 

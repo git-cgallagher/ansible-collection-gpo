@@ -5,9 +5,12 @@ filters — into Git, review changes as pull requests, and import them into a
 target domain (the same one, or a different/untrusted one via migration
 tables).
 
-> **Status: experimental.** The roles are complete but have **not yet run
-> against a live Active Directory domain**. Validate in a lab domain first;
-> see the repository issues for what is unverified.
+> **Status: early (0.x).** Both roles are tested end to end against a real
+> Windows Server 2022 domain controller in CI (`molecule/domain_lab`), within
+> one domain. Importing into a *different* domain isn't lab-tested yet
+> ([issue #16](https://github.com/git-cgallagher/ansible-collection-gpo/issues/16)),
+> so try that in a lab of your own first. Known gaps are listed under
+> [What this doesn't do (yet)](#what-this-doesnt-do-yet).
 
 ## The problem
 
