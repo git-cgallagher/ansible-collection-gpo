@@ -47,7 +47,8 @@ if ($checkMode) { $ReportOnly = $true }
 
 try {
     Import-Module GroupPolicy, ActiveDirectory
-} catch {
+}
+catch {
     throw "The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $_"
 }
 
@@ -71,7 +72,8 @@ function Get-DirContentHash {
         $rel = $it.FullName.Substring($base.Length).TrimStart('\').ToLowerInvariant()
         if ($it.PSIsContainer) {
             [void]$sb.AppendLine("dir|$rel")
-        } else {
+        }
+        else {
             $h = (Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash
             [void]$sb.AppendLine("file|$rel|$h")
         }
@@ -80,7 +82,8 @@ function Get-DirContentHash {
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
         ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    } finally { $sha.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 function Get-StringHash {
@@ -89,7 +92,8 @@ function Get-StringHash {
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
         ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    } finally { $sha.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 function Get-GpoSysvolPath {
@@ -194,9 +198,9 @@ $newState = @{}
 $somContainer = "CN=SOM,CN=WMIPolicy,CN=System,$rootDn"
 $liveFilters = @{}
 foreach ($f in @(
-    Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
-        -LDAPFilter '(objectClass=msWMI-Som)' -Properties msWMI-Name -ErrorAction SilentlyContinue
-)) {
+        Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
+            -LDAPFilter '(objectClass=msWMI-Som)' -Properties msWMI-Name -ErrorAction SilentlyContinue
+    )) {
     $liveFilters[[string]$f.'msWMI-Name'] = $f
 }
 
@@ -223,12 +227,12 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
         $desc = [string]$def.description
         if (-not $desc) { $desc = ' ' }   # empty msWMI-Parm1 breaks GPMC's filter list
         New-ADObject -Type 'msWMI-Som' -Name $id -Path $somContainer -Server $pdc -OtherAttributes @{
-            'msWMI-Name'         = $name
-            'msWMI-Parm1'        = $desc
-            'msWMI-Parm2'        = (ConvertTo-WmiFilterParm2 -Namespace $ns -Query ([string]$def.query))
-            'msWMI-ID'           = $id
-            'msWMI-Author'       = 'git_cgallagher.gpo'
-            'msWMI-ChangeDate'   = $now
+            'msWMI-Name' = $name
+            'msWMI-Parm1' = $desc
+            'msWMI-Parm2' = (ConvertTo-WmiFilterParm2 -Namespace $ns -Query ([string]$def.query))
+            'msWMI-ID' = $id
+            'msWMI-Author' = 'git_cgallagher.gpo'
+            'msWMI-ChangeDate' = $now
             'msWMI-CreationDate' = $now
         } | Out-Null
     }
@@ -262,11 +266,13 @@ foreach ($name in $gpoOrder) {
         if (-not (Test-Path -LiteralPath $wrapper)) {
             if ($liveGpo) {
                 [void]$warnings.Add("GPO '$name': no backup folder in the export; contents unmanaged, reconciling properties only")
-            } else {
+            }
+            else {
                 [void]$errors.Add("GPO '$name': does not exist in $Domain and the export has no backup folder to create it from")
                 continue
             }
-        } else {
+        }
+        else {
             $backupHash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $wrapper)
             $newState[$name] = $backupHash
             $reason = ''
@@ -279,12 +285,12 @@ foreach ($name in $gpoOrder) {
                 if ($migTable) { $desc += ' [migration table]' }
                 Invoke-Change -Description $desc -Action {
                     $importArgs = @{
-                        BackupGpoName  = $name
-                        Path           = $wrapper
-                        TargetName     = $name
+                        BackupGpoName = $name
+                        Path = $wrapper
+                        TargetName = $name
                         CreateIfNeeded = $true
-                        Domain         = $Domain
-                        Server         = $pdc
+                        Domain = $Domain
+                        Server = $pdc
                     }
                     if ($migTable) { $importArgs.MigrationTable = $migTable }
                     Import-GPO @importArgs | Out-Null
@@ -293,7 +299,8 @@ foreach ($name in $gpoOrder) {
                 if (-not $ReportOnly) {
                     $liveGpo = Get-GPO -Name $name -Domain $Domain -Server $pdc
                 }
-            } elseif (-not $ReportOnly) {
+            }
+            elseif (-not $ReportOnly) {
                 # unchanged — keep the recorded hash
                 $newState[$name] = $state[$name]
             }
@@ -325,15 +332,18 @@ foreach ($name in $gpoOrder) {
                 Invoke-Change -Description "GPO '$name': clear WMI filter (was '$currentFilter')" -Action {
                     Set-ADObject -Identity $gpoDn -Clear 'gPCWQLFilter' -Server $pdc
                 }
-            } elseif ($liveFilters.ContainsKey([string]$desiredFilter)) {
+            }
+            elseif ($liveFilters.ContainsKey([string]$desiredFilter)) {
                 $filterCn = $liveFilters[[string]$desiredFilter].Name   # "{guid}"
                 $value = '[{0};{1};0]' -f $Domain, $filterCn
                 Invoke-Change -Description "GPO '$name': WMI filter '$currentFilter' -> '$desiredFilter'" -Action {
                     Set-ADObject -Identity $gpoDn -Replace @{ gPCWQLFilter = $value } -Server $pdc
                 }
-            } elseif ($ReportOnly -and $CreateWmiFilters) {
+            }
+            elseif ($ReportOnly -and $CreateWmiFilters) {
                 [void]$actions.Add("GPO '$name': link WMI filter '$desiredFilter' (after create)")
-            } else {
+            }
+            else {
                 [void]$errors.Add("GPO '$name': WMI filter '$desiredFilter' not found in $Domain; filter link not set")
             }
         }
@@ -344,9 +354,9 @@ foreach ($name in $gpoOrder) {
             foreach ($t in @($entry.apply_to)) { $desiredApply[([string]$t.name).ToLowerInvariant()] = $t }
             $currentApply = @{}
             foreach ($perm in @(
-                Get-GPPermission -Guid $liveGpo.Id -All -Domain $Domain -Server $pdc |
-                    Where-Object { [string]$_.Permission -eq 'GpoApply' }
-            )) {
+                    Get-GPPermission -Guid $liveGpo.Id -All -Domain $Domain -Server $pdc |
+                        Where-Object { [string]$_.Permission -eq 'GpoApply' }
+                )) {
                 $relName = Get-RelativeTrusteeName -Name ([string]$perm.Trustee.Name) -NetBiosName $netbios
                 $sidType = [string]$perm.Trustee.SidType
                 $relType = 'Group'
@@ -375,7 +385,8 @@ foreach ($name in $gpoOrder) {
                 }
             }
         }
-    } catch {
+    }
+    catch {
         [void]$errors.Add("GPO '$name': $($_.Exception.Message)")
     }
 }
@@ -388,7 +399,8 @@ foreach ($som in $soms) {
     try {
         try {
             Get-ADObject -Identity $target -Server $pdc | Out-Null
-        } catch {
+        }
+        catch {
             [void]$errors.Add("SOM '$target' does not exist in $Domain; links not applied")
             continue
         }
@@ -428,7 +440,8 @@ foreach ($som in $soms) {
                             -LinkEnabled (Get-YesNo $dEna) -Enforced (Get-YesNo $dEnf) -Order $pos | Out-Null
                     }
                     $work.Insert([Math]::Min($i, $work.Count), @{ name = $dName; enforced = $dEnf; enabled = $dEna })
-                } else {
+                }
+                else {
                     $cur = $work[$idx]
                     if (($idx -ne $i) -or ($cur.enforced -ne $dEnf) -or ($cur.enabled -ne $dEna)) {
                         Invoke-Change -Description "SOM '$target': set link '$dName' order $pos (enforced=$dEnf, enabled=$dEna)" -Action {
@@ -439,7 +452,8 @@ foreach ($som in $soms) {
                         $work.Insert([Math]::Min($i, $work.Count), @{ name = $dName; enforced = $dEnf; enabled = $dEna })
                     }
                 }
-            } catch {
+            }
+            catch {
                 [void]$errors.Add("SOM '$target', link '$dName': $($_.Exception.Message)")
             }
         }
@@ -452,11 +466,13 @@ foreach ($som in $soms) {
                 Invoke-Change -Description "SOM '$target': remove unmanaged link '$wName'" -Action {
                     Remove-GPLink -Name $wName -Target $target -Domain $Domain -Server $pdc | Out-Null
                 }
-            } else {
+            }
+            else {
                 [void]$warnings.Add("SOM '$target': unmanaged link '$($w.name)' left in place (gpo_import_remove_unmanaged_links not set)")
             }
         }
-    } catch {
+    }
+    catch {
         [void]$errors.Add("SOM '$target': $($_.Exception.Message)")
     }
 }
@@ -474,26 +490,28 @@ $failed = ($errors.Count -gt 0)
 $changed = $false
 if ($ReportOnly) {
     if ($checkMode) { $changed = ($actions.Count -gt 0) }
-} else {
+}
+else {
     $changed = ($actions.Count -gt 0)
 }
 
 $result = @{
     report_only = $ReportOnly
-    actions     = @($actions)
-    warnings    = @($warnings)
-    errors      = @($errors)
-    imported    = $importedCount
-    gpo_count   = $gpoOrder.Count
-    som_count   = $soms.Count
-    server      = $pdc
+    actions = @($actions)
+    warnings = @($warnings)
+    errors = @($errors)
+    imported = $importedCount
+    gpo_count = $gpoOrder.Count
+    som_count = $soms.Count
+    server = $pdc
 }
 
 if ($inAnsible) {
     $Ansible.Changed = $changed
     $Ansible.Result = $result
     if ($failed) { $Ansible.Failed = $true }
-} else {
+}
+else {
     $result | ConvertTo-Json -Depth 6
     if ($failed) { throw "gpo_import finished with $($errors.Count) error(s); see result.errors" }
 }

@@ -34,7 +34,8 @@ if ($inAnsible -and $Ansible.CheckMode) { $checkMode = $true }
 
 try {
     Import-Module GroupPolicy, ActiveDirectory
-} catch {
+}
+catch {
     throw "The GroupPolicy and ActiveDirectory PowerShell modules are required (install RSAT): $_"
 }
 
@@ -61,7 +62,8 @@ function Get-DirContentHash {
         $rel = $it.FullName.Substring($base.Length).TrimStart('\').ToLowerInvariant()
         if ($it.PSIsContainer) {
             [void]$sb.AppendLine("dir|$rel")
-        } else {
+        }
+        else {
             $h = (Get-FileHash -LiteralPath $it.FullName -Algorithm SHA256).Hash
             [void]$sb.AppendLine("file|$rel|$h")
         }
@@ -70,7 +72,8 @@ function Get-DirContentHash {
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
         ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    } finally { $sha.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 function Get-StringHash {
@@ -79,7 +82,8 @@ function Get-StringHash {
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
         ([System.BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '')
-    } finally { $sha.Dispose() }
+    }
+    finally { $sha.Dispose() }
 }
 
 function Get-GpoSysvolPath {
@@ -117,9 +121,10 @@ function ConvertFrom-WmiFilterParm2 {
         $tail = $tail.Substring($tail.IndexOf(';') + 1)   # skip the language token (WQL)
         @{
             namespace = $tail.Substring(0, $nsLen)
-            query     = $tail.Substring($nsLen + 1, $qLen)
+            query = $tail.Substring($nsLen + 1, $qLen)
         }
-    } catch { $null }
+    }
+    catch { $null }
 }
 
 function Get-TrusteeEntry {
@@ -218,11 +223,11 @@ if ($GpoNames.Count -eq 0) {
 
 # --- build the topology manifest ---------------------------------------------
 $manifest = [ordered]@{
-    domain  = $Domain
+    domain = $Domain
     netbios = $netbios
-    gpos    = [ordered]@{}
+    gpos = [ordered]@{}
     wmi_filters = [ordered]@{}
-    soms    = @()
+    soms = @()
 }
 
 foreach ($gpo in $live) {
@@ -236,9 +241,9 @@ foreach ($gpo in $live) {
     )
     $manifest.gpos[$gpo.DisplayName] = [ordered]@{
         backup_dir = $newState.gpos[$gpo.DisplayName].dir
-        status     = $gpo.GpoStatus.ToString()
+        status = $gpo.GpoStatus.ToString()
         wmi_filter = $wmiName
-        apply_to   = $applyTo
+        apply_to = $applyTo
     }
 }
 
@@ -252,9 +257,9 @@ foreach ($f in $filters) {
     $parsed = ConvertFrom-WmiFilterParm2 -Parm2 ([string]$f.'msWMI-Parm2')
     $entry = [ordered]@{
         description = [string]$f.'msWMI-Parm1'
-        namespace   = $null
-        query       = $null
-        raw_parm2   = [string]$f.'msWMI-Parm2'
+        namespace = $null
+        query = $null
+        raw_parm2 = [string]$f.'msWMI-Parm2'
     }
     if ($parsed) {
         $entry.namespace = $parsed.namespace
@@ -275,18 +280,18 @@ foreach ($dn in $somDns) {
     $links = @(
         $inh.GpoLinks | Sort-Object Order | ForEach-Object {
             [ordered]@{
-                gpo      = $_.DisplayName
+                gpo = $_.DisplayName
                 enforced = [bool]$_.Enforced
-                enabled  = [bool]$_.Enabled
+                enabled = [bool]$_.Enabled
             }
         }
     )
     if ($links.Count -gt 0 -or $blocked) {
         $manifest.soms += , ([ordered]@{
-            target            = $dn
-            block_inheritance = $blocked
-            links             = $links
-        })
+                target = $dn
+                block_inheritance = $blocked
+                links = $links
+            })
     }
 }
 
@@ -309,25 +314,26 @@ if (-not $checkMode) {
     foreach ($name in ($newState.gpos.Keys | Sort-Object)) {
         $stateOut.gpos[$name] = [ordered]@{
             hash = $newState.gpos[$name].hash
-            dir  = $newState.gpos[$name].dir
+            dir = $newState.gpos[$name].dir
         }
     }
     Write-Utf8File -Path $stateFile -Content ($stateOut | ConvertTo-Json -Depth 10)
 }
 
 $result = @{
-    changed          = $changed
-    shipped          = @($shipped)
-    deleted          = @($deleted)
+    changed = $changed
+    shipped = @($shipped)
+    deleted = @($deleted)
     manifest_changed = $manifestChanged
-    gpo_count        = @($live).Count
-    zip              = $zipPath
-    server           = $pdc
+    gpo_count = @($live).Count
+    zip = $zipPath
+    server = $pdc
 }
 
 if ($inAnsible) {
     $Ansible.Changed = $changed
     $Ansible.Result = $result
-} else {
+}
+else {
     $result | ConvertTo-Json -Depth 6
 }
