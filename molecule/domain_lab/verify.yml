@@ -1,26 +1,98 @@
 ---
-- name: Verify the export of a fresh domain
+- name: Verify the domain converged back to the authored state
   hosts: all
   gather_facts: false
   vars:
-    lab_manifest: "{{ lookup('ansible.builtin.file', lab_dir ~ '/gpo-repo/gpo-manifest.json') | from_json }}"
-    lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    lab_repo_after: "{{ lab_dir }}/gpo-repo-after"
   tasks:
-    - name: Check the manifest describes the fresh domain's default GPOs and links
+    # 1. The live domain, read through GPMC/AD — independent of the roles.
+    - name: Check the live domain against the fixture
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/assert_domain.ps1') }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_assert
+
+    - name: Show what was observed
+      ansible.builtin.debug:
+        var: lab_assert.result.observed
+
+    - name: Require the domain to match the authored state
+      ansible.builtin.assert:
+        that: lab_assert.result.failures | length == 0
+        fail_msg: "{{ lab_assert.result.failures }}"
+
+    # 2. A converged domain needs no further actions.
+    - name: Re-plan the import (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_report_only: true
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true
+
+    - name: Check nothing is left to do
+      ansible.builtin.assert:
+        that: gpo_import_run.result.actions | length == 0
+        fail_msg: "Still planned after converge: {{ gpo_import_run.result.actions }}"
+
+    # 3. Round trip: exporting the converged domain must reproduce the
+    #    pre-drift export. The backup role compares against the host's state
+    #    from prepare.yml, so "manifest unchanged" is an exact topology match.
+    - name: Start from an empty re-export directory
+      ansible.builtin.file:
+        path: "{{ lab_repo_after }}"
+        state: absent
+      delegate_to: localhost
+
+    - name: Re-export the converged domain
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo_after }}"
+
+    # Import-GPO may re-serialize files (e.g. GptTmpl.inf) even when the
+    # settings are identical; this records which GPOs that happened to.
+    - name: Report GPOs whose exported content changed byte-wise after Import-GPO
+      ansible.builtin.debug:
+        msg: "{{ gpo_backup_export.result.shipped | map(attribute='name') | list }}"
+
+    - name: Check links, precedence, filtering, WMI filters and status round-tripped exactly
+      block:
+        - name: Require an unchanged manifest
+          ansible.builtin.assert:
+            that: not gpo_backup_export.result.manifest_changed
+            quiet: true
+      rescue:
+        - name: Show the pre-drift manifest
+          ansible.builtin.debug:
+            msg: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
+
+        - name: Show the post-import manifest
+          ansible.builtin.debug:
+            msg: "{{ lookup('ansible.builtin.file', lab_repo_after ~ '/gpo-manifest.json') | from_json }}"
+
+        - name: Fail on the topology mismatch
+          ansible.builtin.fail:
+            msg: The post-import manifest differs from the pre-drift one (both shown above).
+
+    # 4. Export stability after an import: the next export ships nothing.
+    - name: Export once more
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo_after }}"
+
+    - name: Check the export is stable
       ansible.builtin.assert:
         that:
-          - lab_manifest.domain == lab_domain
-          - lab_manifest.netbios == lab_netbios
-          - "'Default Domain Policy' in lab_manifest.gpos"
-          - "'Default Domain Controllers Policy' in lab_manifest.gpos"
-          - lab_root_dn in (lab_manifest.soms | map(attribute='target'))
-          - "'OU=Domain Controllers,' ~ lab_root_dn in (lab_manifest.soms | map(attribute='target'))"
-        fail_msg: "Unexpected manifest: {{ lab_manifest | to_nice_json }}"
-
-    - name: Check both default GPOs were exported as backup folders
-      ansible.builtin.stat:
-        path: "{{ lab_dir }}/gpo-repo/gpos/{{ item }}/manifest.xml"
-      loop: ['Default Domain Policy', 'Default Domain Controllers Policy']
-      register: lab_backup_folders
-      failed_when: not lab_backup_folders.stat.exists
-      delegate_to: localhost
+          - not gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | length == 0
+          - not gpo_backup_export.result.manifest_changed
+        fail_msg: "Export not stable after import: {{ gpo_backup_export.result | to_nice_json }}"

@@ -63,7 +63,7 @@ function ConvertTo-SafeName {
 
 function Get-DirContentHash {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return '' }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
     $base = (Get-Item -LiteralPath $Path).FullName
     $sb = New-Object System.Text.StringBuilder
     $items = Get-ChildItem -LiteralPath $base -Recurse -Force |
@@ -97,13 +97,16 @@ function Get-StringHash {
 }
 
 function Get-GpoSysvolPath {
+    # A GPO with no settings has no DomainSysvol: return $null (hashes as '')
+    # rather than fall back to the volatile Backup.xml / bkupInfo.xml /
+    # gpreport.xml, which would make it re-ship on every run.
     param([string]$BackupDir)
     $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
         Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
-    if ($null -eq $guidDir) { return $BackupDir }
+    if ($null -eq $guidDir) { return $null }
     $sysvol = Join-Path $guidDir.FullName 'DomainSysvol'
     if (Test-Path -LiteralPath $sysvol) { return $sysvol }
-    return $guidDir.FullName
+    return $null
 }
 
 function Write-Utf8File {
@@ -119,6 +122,28 @@ function ConvertTo-WmiFilterParm2 {
     # Single-query encoder; inverse of the parser in backup_gpos.ps1.
     param([string]$Namespace, [string]$Query)
     '1;3;{0};{1};WQL;{2};{3};' -f $Namespace.Length, $Query.Length, $Namespace, $Query
+}
+
+function ConvertTo-LdapFilterValue {
+    # RFC 4515 escaping for a value inside an LDAP filter (backslash first).
+    param([string]$Value)
+    $Value.Replace('\', '\5c').Replace('*', '\2a').Replace('(', '\28').Replace(')', '\29')
+}
+
+function Get-GpoOrNull {
+    # Get-GPO raises GpoWithNameNotFound for a missing display name. Anything
+    # else (access denied, DC unreachable) must still fail loudly instead of
+    # being mistaken for "missing" and triggering Import-GPO -CreateIfNeeded.
+    param([string]$Name)
+    try {
+        Get-GPO -Name $Name -Domain $Domain -Server $pdc -ErrorAction Stop
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -like 'GpoWithNameNotFound*' -or $_.CategoryInfo.Category -eq 'ObjectNotFound') {
+            return $null
+        }
+        throw
+    }
 }
 
 function Get-RelativeTrusteeName {
@@ -192,7 +217,10 @@ if (Test-Path -LiteralPath $stateFile) {
         }
     }
 }
+# Start from the recorded state so a filtered (GpoNames) run doesn't drop
+# the other GPOs' entries and force them all to re-import next time.
 $newState = @{}
+foreach ($k in $state.Keys) { $newState[$k] = $state[$k] }
 
 # --- 1. WMI filters ------------------------------------------------------------
 $somContainer = "CN=SOM,CN=WMIPolicy,CN=System,$rootDn"
@@ -238,7 +266,7 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
     }
     if (-not $ReportOnly) {
         $created = Get-ADObject -SearchBase $somContainer -SearchScope OneLevel -Server $pdc `
-            -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$name))" -Properties msWMI-Name |
+            -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$(ConvertTo-LdapFilterValue -Value $name)))" -Properties msWMI-Name |
             Select-Object -First 1
         if ($created) { $liveFilters[$name] = $created }
     }
@@ -260,7 +288,7 @@ foreach ($name in $gpoOrder) {
         if (-not $backupDir) { $backupDir = ConvertTo-SafeName -Name $name }
         $wrapper = Join-Path $gposRoot $backupDir
 
-        $liveGpo = Get-GPO -Name $name -Domain $Domain -Server $pdc -ErrorAction SilentlyContinue
+        $liveGpo = Get-GpoOrNull -Name $name
 
         # -- contents --
         if (-not (Test-Path -LiteralPath $wrapper)) {
@@ -274,7 +302,6 @@ foreach ($name in $gpoOrder) {
         }
         else {
             $backupHash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $wrapper)
-            $newState[$name] = $backupHash
             $reason = ''
             if ($ForceImport) { $reason = 'forced' }
             elseif (-not $liveGpo) { $reason = 'GPO missing in target' }
@@ -297,12 +324,11 @@ foreach ($name in $gpoOrder) {
                 }
                 $importedCount++
                 if (-not $ReportOnly) {
-                    $liveGpo = Get-GPO -Name $name -Domain $Domain -Server $pdc
+                    # Recorded only after Import-GPO succeeded (a throw skips
+                    # this), so a failed import is retried on the next run.
+                    $newState[$name] = $backupHash
+                    $liveGpo = Get-GpoOrNull -Name $name
                 }
-            }
-            elseif (-not $ReportOnly) {
-                # unchanged — keep the recorded hash
-                $newState[$name] = $state[$name]
             }
         }
 

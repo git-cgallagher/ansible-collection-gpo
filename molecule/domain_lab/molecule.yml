@@ -39,8 +39,21 @@ provisioner:
         lab_dir: "{{ lookup('ansible.builtin.env', 'GPO_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/gpo-domain-lab', true) }}"
         lab_domain: gpolab.test
         lab_netbios: GPOLAB
+        lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
         # Throwaway VM reachable only on the runner's loopback.
         lab_dsrm_password: Example-not-secret-1
+        # The authored state files/lab_fixture.ps1 seeds and assert_domain.ps1
+        # checks (passed to both as JSON, and used by the YAML assertions).
+        lab_fixture:
+          ou: IacLab
+          group: GG-IacLab-Servers
+          gpo_baseline: IacLab - Server Baseline
+          gpo_rdp: IacLab - RDP Settings
+          gpo_password: IacLab - Password Policy
+          wmi_filter: IacLab Server OS
+          wmi_description: Member servers and domain controllers
+          wmi_namespace: 'root\CIMv2'
+          wmi_query: 'SELECT * FROM Win32_OperatingSystem WHERE ProductType > 1'
 verifier:
   name: ansible
 scenario:

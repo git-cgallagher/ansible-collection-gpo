@@ -45,8 +45,12 @@ record surprises here as gotchas.
 - The manifest (`gpo-manifest.json`) is the contract between the roles.
   Round-trip symmetry is the invariant: whatever `gpo_backup` writes,
   `gpo_import` consumes verbatim. Change both sides and the README together.
-- Zip with `[System.IO.Compression.ZipFile]`, never `Compress-Archive` (it
-  drops empty directories, and GPO backups contain them).
+- The backup zip is built entry by entry (`New-ZipFromDirectory`), never with
+  `Compress-Archive` (drops empty directories, which GPO backups contain) or
+  `ZipFile::CreateFromDirectory` (some .NET Framework/PowerShell 5.1
+  combinations write backslash separators, which Linux `unzip` warns about
+  and `unarchive` treats as failure). Entries use `/`; empty directories get
+  explicit entries.
 - Release flow mirrors `ansible-collection-isc`: every merge that changes
   shipped files must bump `galaxy.yml` + add a `CHANGELOG.md` entry
   (CI-enforced). `release.yml` is **workflow_dispatch-only** until

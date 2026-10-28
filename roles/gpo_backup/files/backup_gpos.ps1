@@ -53,7 +53,7 @@ function Get-DirContentHash {
     # per-file SHA256. Empty directories count, so a GPO gaining or losing an
     # empty User/ folder still registers.
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return '' }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return '' }
     $base = (Get-Item -LiteralPath $Path).FullName
     $sb = New-Object System.Text.StringBuilder
     $items = Get-ChildItem -LiteralPath $base -Recurse -Force |
@@ -90,14 +90,16 @@ function Get-GpoSysvolPath {
     # Inside a Backup-GPO folder, the settings payload lives under
     # {backup-guid}\DomainSysvol. Hashing only that subtree keeps the hash
     # stable across re-backups (Backup.xml / bkupInfo.xml / gpreport.xml
-    # carry timestamps and a fresh backup GUID every time).
+    # carry timestamps and a fresh backup GUID every time). A GPO with no
+    # settings has no DomainSysvol: return $null (hashes as '') rather than
+    # fall back to those volatile files, or it would re-ship on every run.
     param([string]$BackupDir)
     $guidDir = Get-ChildItem -LiteralPath $BackupDir -Directory |
         Where-Object { $_.Name -match '^\{.+\}$' } | Select-Object -First 1
-    if ($null -eq $guidDir) { return $BackupDir }
+    if ($null -eq $guidDir) { return $null }
     $sysvol = Join-Path $guidDir.FullName 'DomainSysvol'
     if (Test-Path -LiteralPath $sysvol) { return $sysvol }
-    return $guidDir.FullName
+    return $null
 }
 
 function Write-Utf8File {
@@ -106,6 +108,32 @@ function Write-Utf8File {
     [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
 # endregion common
+
+function New-ZipFromDirectory {
+    # Entries are written one by one so that (a) names use forward slashes —
+    # some .NET Framework / PowerShell 5.1 combinations write backslashes,
+    # which Linux unzip warns about and Ansible's unarchive treats as failure —
+    # and (b) empty directories get explicit entries (GPO backups contain
+    # them; Compress-Archive drops them).
+    param([string]$Source, [string]$Destination)
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $base = (Get-Item -LiteralPath $Source).FullName.TrimEnd('\') + '\'
+    $zip = [System.IO.Compression.ZipFile]::Open($Destination, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($item in Get-ChildItem -LiteralPath $base -Recurse -Force) {
+            $rel = $item.FullName.Substring($base.Length).Replace('\', '/')
+            if ($item.PSIsContainer) {
+                if (-not (Get-ChildItem -LiteralPath $item.FullName -Force | Select-Object -First 1)) {
+                    [void]$zip.CreateEntry($rel + '/')
+                }
+            }
+            else {
+                [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $item.FullName, $rel)
+            }
+        }
+    }
+    finally { $zip.Dispose() }
+}
 
 function ConvertFrom-WmiFilterParm2 {
     # msWMI-Parm2 single-query form: "1;3;<nsLen>;<qLen>;WQL;<namespace>;<query>;"
@@ -304,9 +332,7 @@ $manifestChanged = ($manifestHash -ne $state.manifest_hash)
 # --- zip + state -------------------------------------------------------------
 $zipPath = Join-Path $WorkDir 'gpo-export.zip'
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-# Not Compress-Archive: it drops empty directories, which GPO backups contain.
-[System.IO.Compression.ZipFile]::CreateFromDirectory($exportRoot, $zipPath)
+New-ZipFromDirectory -Source $exportRoot -Destination $zipPath
 
 $changed = ($shipped.Count -gt 0) -or ($deleted.Count -gt 0) -or $manifestChanged
 if (-not $checkMode) {

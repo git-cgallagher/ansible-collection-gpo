@@ -8,18 +8,22 @@
     quiet: true
 
 # Staging tasks run even in --check (the convergence script needs the files
-# to compute its plan); the script itself then runs report-only.
+# to compute its plan); the script itself then runs report-only. They're
+# scratch space, not managed state, so they never report a change — the
+# import task's result is the role's real "changed".
 - name: Clear the staging directory
   ansible.windows.win_file:
     path: '{{ gpo_import_workdir }}\stage'
     state: absent
   check_mode: false
+  changed_when: false
 
-- name: Stage the export on the management host   # win_copy is file-by-file; large estates take a while
+- name: Stage the export on the management host
   ansible.windows.win_copy:
     src: "{{ gpo_import_source_dir }}/"
     dest: '{{ gpo_import_workdir }}\stage\'
   check_mode: false
+  changed_when: false
 
 - name: Import GPOs and reconcile topology
   ansible.windows.win_powershell:

@@ -98,7 +98,7 @@ jobs:
       - name: Parse scripts and run PSScriptAnalyzer
         shell: pwsh
         run: |
-          $files = Get-ChildItem roles -Recurse -Filter '*.ps1'
+          $files = Get-ChildItem roles, molecule -Recurse -Filter '*.ps1'
           if (-not $files) { throw 'No PowerShell scripts found; did the layout change?' }
           $failed = $false
           foreach ($f in $files) {
@@ -111,7 +111,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $findings = Invoke-ScriptAnalyzer -Path roles -Recurse -Severity Warning, Error
+          $findings = 'roles', 'molecule' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
           if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
 

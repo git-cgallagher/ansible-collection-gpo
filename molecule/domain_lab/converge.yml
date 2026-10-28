@@ -1,11 +1,15 @@
 ---
-- name: Export the domain with gpo_backup
+# The domain was drifted in prepare.yml; converge it back from the export.
+# Molecule's idempotence step re-runs this and fails on any "changed".
+- name: Converge the drifted domain on the exported repo with gpo_import
   hosts: all
   gather_facts: false
   tasks:
-    - name: Run gpo_backup
+    - name: Run gpo_import
       ansible.builtin.include_role:
-        name: git_cgallagher.gpo.gpo_backup
+        name: git_cgallagher.gpo.gpo_import
       vars:
-        gpo_backup_domain: "{{ lab_domain }}"
-        gpo_backup_repo_dir: "{{ lab_dir }}/gpo-repo"
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_dir }}/gpo-repo"
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true

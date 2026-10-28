@@ -93,3 +93,165 @@
     - name: Report the domain
       ansible.builtin.debug:
         var: lab_domain_info.output
+
+# Authored state -> export -> out-of-band drift. converge.yml then has to put
+# the domain back from the export alone.
+- name: Seed the authored state, export it with gpo_backup, then drift the domain
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    lab_ou_dn: "OU={{ lab_fixture.ou }},{{ lab_root_dn }}"
+  tasks:
+    - name: Seed OUs, a group, a WMI filter and three GPOs with links and filtering
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Seed
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+
+    - name: Start from an empty export directory
+      ansible.builtin.file:
+        path: "{{ lab_repo }}"
+        state: absent
+      delegate_to: localhost
+
+    # Full export: ships every GPO even if the host's backup state already
+    # knows it (a re-run of prepare on the same VM).
+    - name: Export the authored state
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+        gpo_backup_full_export: true
+
+    - name: Check the manifest captured links, precedence, filtering, WMI filter and status
+      ansible.builtin.assert:
+        that:
+          - lab_m.domain == lab_domain
+          - lab_m.gpos[lab_fixture.gpo_baseline].status == 'AllSettingsEnabled'
+          - lab_m.gpos[lab_fixture.gpo_baseline].wmi_filter == lab_fixture.wmi_filter
+          - "lab_m.gpos[lab_fixture.gpo_baseline].apply_to == [{'name': lab_fixture.group, 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_rdp].status == 'UserSettingsDisabled'
+          - "lab_m.gpos[lab_fixture.gpo_rdp].apply_to == [{'name': 'Authenticated Users', 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_password].status == 'AllSettingsEnabled'
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].namespace == lab_fixture.wmi_namespace
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].query == lab_fixture.wmi_query
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].description == lab_fixture.wmi_description
+          - "lab_servers.links == [{'gpo': lab_fixture.gpo_baseline, 'enforced': true, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': true}]"
+          - not lab_servers.block_inheritance
+          - "lab_workstations.links == [{'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': false}]"
+          - lab_workstations.block_inheritance
+          - "lab_ou.links == [{'gpo': lab_fixture.gpo_password, 'enforced': false, 'enabled': true}]"
+        fail_msg: "Manifest doesn't match the fixture: {{ lab_m | to_nice_json }}"
+      vars:
+        lab_m: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
+        lab_servers: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Servers,' ~ lab_ou_dn) | first }}"
+        lab_workstations: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Workstations,' ~ lab_ou_dn) | first }}"
+        lab_ou: "{{ lab_m.soms | selectattr('target', 'equalto', lab_ou_dn) | first }}"
+
+    - name: Check every fixture GPO was exported as a backup folder
+      ansible.builtin.stat:
+        path: "{{ lab_repo }}/gpos/{{ item }}/manifest.xml"
+      loop: "{{ [lab_fixture.gpo_baseline, lab_fixture.gpo_rdp, lab_fixture.gpo_password] }}"
+      register: lab_backup_folders
+      failed_when: not lab_backup_folders.stat.exists
+      delegate_to: localhost
+
+    - name: Export again without changes
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+
+    - name: Check an unchanged domain exports nothing (backup idempotence)
+      ansible.builtin.assert:
+        that:
+          - not gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | length == 0
+          - not gpo_backup_export.result.manifest_changed
+        fail_msg: "Second export wasn't a no-op: {{ gpo_backup_export.result | to_nice_json }}"
+
+    - name: Drift the domain out-of-band
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Drift
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+
+    - name: Plan the import against the drifted domain (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_report_only: true
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true
+
+    - name: Check the plan covers the drift
+      ansible.builtin.assert:
+        that:
+          - not gpo_import_run.changed
+          - gpo_import_run.result.report_only
+          - gpo_import_run.result.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "create WMI filter") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "remove unmanaged link") | list | length == 1
+        fail_msg: "Unexpected plan: {{ gpo_import_run.result | to_nice_json }}"
+
+    - name: Look for the deleted GPO after the report-only run
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $Ansible.Changed = $false
+          [bool](Get-GPO -All | Where-Object { $_.DisplayName -eq $Name })
+        parameters:
+          Name: "{{ lab_fixture.gpo_rdp }}"
+      register: lab_rdp_after_plan
+
+    - name: Check report-only touched nothing
+      ansible.builtin.assert:
+        that: not (lab_rdp_after_plan.output | first)
+        fail_msg: report-only mode recreated a GPO
+
+    # GPP cpassword is a decryptable secret; the import must refuse a backup
+    # that contains one, before touching the domain.
+    - name: Build a copy of the export with a cpassword planted in it
+      delegate_to: localhost
+      block:
+        - name: Copy the export
+          ansible.builtin.copy:
+            src: "{{ lab_repo }}/"
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/"
+            remote_src: true
+            mode: u=rwX,go=
+
+        - name: Plant a Groups.xml carrying cpassword
+          ansible.builtin.copy:
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/gpos/{{ lab_fixture.gpo_baseline }}/Groups.xml"
+            content: '<Groups><User name="x"><Properties cpassword="example-not-secret"/></User></Groups>'
+            mode: "0600"
+
+    - name: Import the poisoned export
+      block:
+        - name: Run gpo_import on it
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: "{{ lab_domain }}"
+            gpo_import_source_dir: "{{ lab_dir }}/gpo-repo-cpassword"
+            gpo_import_report_only: true
+
+        - name: Fail — the import should have refused
+          ansible.builtin.fail:
+            msg: gpo_import accepted a backup containing cpassword
+      rescue:
+        - name: Check it refused because of cpassword
+          ansible.builtin.assert:
+            that: ansible_failed_result | to_json is search('Refusing to import')
+            fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"
