@@ -58,7 +58,10 @@ carry:
 - block-inheritance on containers
 - the GPO's own ACL → security filtering
 - WMI filter objects and the GPO→filter link
-- GPO status (computer/user halves enabled)
+
+GPO status (computer/user halves enabled) *is* restored by `Import-GPO`
+(observed in the domain_lab run of 2026-10-28). The manifest still records
+it, and the import still reconciles it, as a safety net.
 
 Those live in the manifest (`gpo-manifest.json`), generated from the live
 domain by `gpo_backup` and converged by `gpo_import`:

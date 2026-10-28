@@ -89,9 +89,9 @@ function Get-LdapEntry {
 }
 
 function Set-AdAttributeLdap {
-    # ADSI/LDAP: the mechanism GPMC itself uses. In the lab, Set-ADObject
-    # (AD Web Services) was refused (8344) writing a GPO's AD object as Domain
-    # Admin while GPMC's writes to the same objects succeeded; cause unconfirmed.
+    # ADSI/LDAP: the mechanism GPMC itself uses. Set-ADObject (AD Web
+    # Services) is refused (8344) writing a GPO's AD object here even with
+    # Domain Admins in the token; LDAP and GPMC writes succeed (see AGENTS.md).
     param([string]$Dn, [hashtable]$Values)
     $entry = Get-LdapEntry -Dn $Dn
     try {

@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly health check, and the only regular run of the devel canary below.
+  schedule:
+    - cron: '0 13 * * 2'
   workflow_dispatch:
 
 permissions:
@@ -57,16 +60,29 @@ jobs:
   sanity:
     name: sanity (${{ matrix.ansible-core-version }})
     runs-on: ubuntu-latest
-    # devel is an early warning, never a merge gate.
-    continue-on-error: ${{ matrix.ansible-core-version == 'devel' }}
     strategy:
       fail-fast: false
       matrix:
-        ansible-core-version: [stable-2.18, stable-2.19, stable-2.20, stable-2.21, devel]
+        ansible-core-version: [stable-2.18, stable-2.19, stable-2.20, stable-2.21]
     steps:
       - uses: ansible-community/ansible-test-gh-action@6ded727edb598e670ac056a8e680ca4050bac0a3  # v1.18.0
         with:
           ansible-core-version: ${{ matrix.ansible-core-version }}
+          testing-type: sanity
+
+  # Early warning against ansible-core's development branch, never a merge
+  # gate. It runs on main, weekly and on demand, not on pull requests, where an
+  # upstream breakage reads as a failed PR check (Oct 2026: devel's test
+  # container failed to start on GitHub runners, "audit status: EPERM").
+  sanity-devel:
+    name: sanity (devel)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: ansible-community/ansible-test-gh-action@6ded727edb598e670ac056a8e680ca4050bac0a3  # v1.18.0
+        with:
+          ansible-core-version: devel
           testing-type: sanity
 
   lint:

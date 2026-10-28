@@ -96,15 +96,27 @@ ansible-galaxy collection build --force
 
 ## ⚠️ Gotchas
 
-- **Write GPO AD objects through GPMC, not `Set-ADObject`.** In the
-  domain_lab run of 2026-10-28, `Set-ADObject` (AD Web Services) on a GPO's
-  `groupPolicyContainer` failed with 8344 "insufficient access rights" as a
-  Domain Admin over PSRP/NTLM, while GPMC's own writes to the same objects
-  (registry settings bumping `versionNumber`, `GpoStatus`, the WMI filter
-  link) succeeded in the same session. Cause unconfirmed; the lab's seed
-  step records `whoami /groups` plus an ADWS probe to settle it. The roles
-  therefore link WMI filters with `Gpo.WmiFilter`; the test fixture uses ADSI
-  (LDAP, GPMC's own mechanism) for the writes GPMC has no API for.
+- **Write GPO AD objects through GPMC (or LDAP), never `Set-ADObject`.**
+  Confirmed in the domain_lab runs of 2026-10-28: `Set-ADObject` (AD Web
+  Services) on a GPO's `groupPolicyContainer` fails with 8344 "insufficient
+  access rights" even though the session's token holds Domain Admins,
+  BUILTIN\Administrators and Group Policy Creator Owners (checked with
+  `whoami /groups` on the DC itself, so not a double hop). GPMC's writes and
+  ADSI/LDAP writes to the same objects succeed. The exact ADWS cause is
+  unknown. The roles link and clear WMI filters with `Gpo.WmiFilter` (clearing
+  with `$null` is verified); the fixture uses ADSI for writes GPMC can't
+  express. ADWS *creates* (`New-ADObject` for `msWMI-Som`) do work.
+- **`Import-GPO` re-serializes security templates.** An imported GPO's
+  `GptTmpl.inf` has GPMC's canonical section order and sorted Restricted
+  Groups members, so it's byte-different from the backup even when every
+  setting matches. Compare security templates semantically, and expect the
+  first export after an import to re-ship such GPOs once (the next one ships
+  nothing). Matters for the "adopt without reimporting" design (issue #9).
+- **`Import-GPO` restores GPO status** (the computer/user halves), unlike
+  links, filtering and the WMI filter link.
+- **The effective domain password policy** follows link order at the domain
+  root after `gpupdate /target:computer /force` on the PDC (the first refresh
+  after promotion took about 90 seconds in the lab).
 
 - **`ansible-test sanity` runs pslint over every `*.ps1` in the collection**,
   `roles/*/files/` included, with ansible-core's own `settings.psd1`:

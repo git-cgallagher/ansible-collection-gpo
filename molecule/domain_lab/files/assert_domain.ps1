@@ -199,8 +199,13 @@ Test-Lab ($null -ne $wsAdmins) "GPO '$($fx.gpo_ws_admins)' is missing"
 if ($wsAdmins) {
     $text = Get-GpoFile -Gpo $wsAdmins -RelativePath $secEditInf
     $observed['workstation local admins GptTmpl.inf'] = $text
-    $want = '*S-1-5-32-544__Members = *{0},*{1}' -f (Get-GroupSid -Name 'Domain Admins'), (Get-GroupSid -Name $fx.ws_admins_group)
-    Test-Lab ($text.Contains($want)) "Restricted Groups line missing: want '$want'"
+    # Compare the member *set*: Import-GPO re-serializes GptTmpl.inf (section
+    # order, members sorted), so the line's text differs from what was authored.
+    $line = @(($text -split "`r?`n") | Where-Object { $_.StartsWith('*S-1-5-32-544__Members') }) -join ''
+    $members = @(($line -split '=', 2)[-1] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ } | Sort-Object)
+    $want = @((Get-GroupSid -Name 'Domain Admins'), (Get-GroupSid -Name $fx.ws_admins_group)) | Sort-Object
+    Test-Lab (($members -join ',') -eq ($want -join ',')) `
+        "Restricted Groups Administrators members are [$($members -join ', ')], want [$($want -join ', ')]"
 }
 
 $inAnsible = $null -ne (Get-Variable -Name Ansible -ErrorAction SilentlyContinue)
