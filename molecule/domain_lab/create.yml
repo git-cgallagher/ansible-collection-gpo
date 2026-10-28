@@ -1,0 +1,184 @@
+---
+- name: Create the domain-lab VM
+  hosts: localhost
+  gather_facts: false
+  vars:
+    lab_platform: "{{ molecule_yml.platforms[0] }}"
+    lab_box_dir: "{{ lab_dir }}/box-{{ lab_platform.box_sha256[:12] }}"
+    lab_box: "{{ lab_box_dir }}/box.img"
+    lab_overlay: "{{ lab_dir }}/{{ lab_platform.name }}.qcow2"
+    lab_pidfile: "{{ lab_dir }}/{{ lab_platform.name }}.pid"
+    lab_monitor: "{{ lab_dir }}/{{ lab_platform.name }}-monitor.sock"
+  tasks:
+    # --- fail fast, with messages that say what to fix --------------------------
+    - name: Check for /dev/kvm
+      ansible.builtin.stat:
+        path: /dev/kvm
+      register: lab_kvm
+
+    - name: Require a usable /dev/kvm
+      ansible.builtin.assert:
+        that:
+          - lab_kvm.stat.exists
+          - lab_kvm.stat.writeable
+        fail_msg: >-
+          /dev/kvm is missing or not writable by this user. This scenario boots
+          a Windows Server VM and needs hardware virtualization (a Linux host or
+          a GitHub ubuntu-latest runner — not macOS/Apple Silicon).
+        quiet: true
+
+    - name: Check that QEMU is installed
+      ansible.builtin.command:
+        argv: ["{{ item }}", --version]
+      loop: [qemu-system-x86_64, qemu-img]
+      changed_when: false
+
+    - name: Ensure the lab directory exists
+      ansible.builtin.file:
+        path: "{{ lab_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Look for a cached box image
+      ansible.builtin.stat:
+        path: "{{ lab_box }}"
+      register: lab_box_stat
+
+    - name: Measure free space in the lab directory
+      ansible.builtin.command:
+        argv: [df, -Pk, "{{ lab_dir }}"]
+      register: lab_df
+      changed_when: false
+
+    # ~6 GB download + ~6 GB extracted image while the box isn't cached, plus
+    # headroom for the VM's copy-on-write disk.
+    - name: Require enough free space
+      ansible.builtin.assert:
+        that: (lab_df.stdout_lines[1].split()[3] | int) >= lab_need_kb | int
+        fail_msg: >-
+          {{ lab_dir }} has {{ ((lab_df.stdout_lines[1].split()[3] | int) / 1048576) | round(1) }} GB free;
+          this run needs {{ (lab_need_kb | int / 1048576) | round(0) }} GB. Point GPO_LAB_DIR at a bigger disk.
+        quiet: true
+      vars:
+        lab_need_kb: "{{ (8 if lab_box_stat.stat.exists else 20) * 1048576 }}"
+
+    - name: Require the WinRM forward port to be free
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ lab_platform.winrm_port }}"
+        state: stopped
+        timeout: 5
+        msg: >-
+          127.0.0.1:{{ lab_platform.winrm_port }} is already in use — a VM from a
+          previous run? Run `molecule destroy -s domain_lab` first.
+
+    # --- box image (cached across runs, keyed by checksum) -----------------------
+    - name: Fetch and unpack the box
+      when: not lab_box_stat.stat.exists
+      block:
+        - name: Create the box cache directory
+          ansible.builtin.file:
+            path: "{{ lab_box_dir }}"
+            state: directory
+            mode: "0700"
+
+        - name: Download the Windows Server box (~5.9 GB, checksum-pinned)
+          ansible.builtin.get_url:
+            url: "{{ lab_platform.box_url }}"
+            dest: "{{ lab_box_dir }}/box.download"
+            checksum: "sha256:{{ lab_platform.box_sha256 }}"
+            tmp_dest: "{{ lab_box_dir }}"
+            timeout: 600
+            mode: "0600"
+
+        # tar rather than unarchive: unarchive decompresses the archive twice
+        # (list, then extract), which costs minutes on a 6 GB box.
+        - name: Extract the disk image from the box  # noqa: command-instead-of-module
+          ansible.builtin.command:
+            argv: [tar, -xzf, "{{ lab_box_dir }}/box.download", -C, "{{ lab_box_dir }}", ./box.img]
+            creates: "{{ lab_box }}"
+
+        - name: Remove the downloaded archive
+          ansible.builtin.file:
+            path: "{{ lab_box_dir }}/box.download"
+            state: absent
+
+    # --- VM ------------------------------------------------------------------------
+    - name: Create a copy-on-write disk on top of the box image
+      ansible.builtin.command:
+        argv: [qemu-img, create, -f, qcow2, -F, qcow2, -b, "{{ lab_box }}", "{{ lab_overlay }}"]
+        creates: "{{ lab_overlay }}"
+
+    # Machine type, BIOS boot, virtio disk/NIC and Hyper-V enlightenments match
+    # how the box was built (packer-windoze roles/setup/tasks/qemu.yml).
+    - name: Start the VM
+      ansible.builtin.command:
+        argv:
+          - qemu-system-x86_64
+          - -name
+          - "gpo-{{ lab_platform.name }}"
+          - -machine
+          - type=pc,accel=kvm
+          - -cpu
+          - host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time
+          - -smp
+          - "{{ lab_platform.cpus }}"
+          - -m
+          - "{{ lab_platform.memory_mb }}M"
+          - -rtc
+          - base=localtime
+          - -drive
+          - "file={{ lab_overlay }},if=virtio,format=qcow2,cache=unsafe,discard=unmap"
+          - -netdev
+          - "user,id=net0,hostfwd=tcp:127.0.0.1:{{ lab_platform.winrm_port }}-:5985"
+          - -device
+          - virtio-net-pci,netdev=net0
+          - -display
+          - none
+          - -monitor
+          - "unix:{{ lab_monitor }},server,nowait"
+          - -pidfile
+          - "{{ lab_pidfile }}"
+          - -daemonize
+      changed_when: true
+
+    - name: Write the Molecule instance config
+      ansible.builtin.copy:
+        dest: "{{ molecule_instance_config }}"
+        content: "{{ [lab_instance] | to_nice_yaml }}"
+        mode: "0600"
+      vars:
+        lab_instance:
+          instance: "{{ lab_platform.name }}"
+          address: 127.0.0.1
+          port: "{{ lab_platform.winrm_port }}"
+          user: "{{ lab_platform.box_user }}"
+          password: "{{ lab_platform.box_password }}"
+          connection: psrp
+
+    # The box's first boot runs OOBE, rearms the evaluation licence, reboots,
+    # then recreates the WinRM listeners and finally deletes C:\temp\setup.ps1.
+    # WinRM answers *during* that sequence, so "port open" isn't "ready": poll
+    # the marker from a fresh process each time, which a mid-poll reboot can't
+    # break the way it would break an Ansible connection.
+    - name: Wait for the box's first boot to finish (OOBE, rearm reboot, WinRM reset)
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - |
+            import sys
+            from pypsrp.client import Client
+            client = Client(sys.argv[1], port=int(sys.argv[2]), username=sys.argv[3], password=sys.argv[4],
+                            ssl=False, auth="negotiate", connection_timeout=10)
+            out, _, _ = client.execute_ps("if (Test-Path -LiteralPath 'C:\\temp\\setup.ps1') { 'busy' } else { 'ready' }")
+            sys.exit(0 if out.strip() == "ready" else 3)
+          - 127.0.0.1
+          - "{{ lab_platform.winrm_port }}"
+          - "{{ lab_platform.box_user }}"
+          - "{{ lab_platform.box_password }}"
+      register: lab_first_boot
+      until: lab_first_boot.rc == 0
+      retries: 120
+      delay: 15
+      changed_when: false

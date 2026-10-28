@@ -1,4 +1,5 @@
 collections/
+.molecule-collections/
 .ansible/
 tests/output/
 *.tar.gz

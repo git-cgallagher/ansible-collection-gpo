@@ -25,6 +25,8 @@ build_ignore:
   - .github
   - .ansible
   - collections
+  - molecule
+  - .molecule-collections
   - tests
   - '*.tar.gz'
   - .ansible-lint

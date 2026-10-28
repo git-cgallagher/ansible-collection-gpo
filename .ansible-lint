@@ -2,6 +2,7 @@
 profile: production
 exclude_paths:
   - collections/
+  - .molecule-collections/
   - .github/
   - .ansible/
   - .cache/

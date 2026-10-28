@@ -1,0 +1,49 @@
+---
+- name: Destroy the domain-lab VM
+  hosts: localhost
+  gather_facts: false
+  vars:
+    lab_platform: "{{ molecule_yml.platforms[0] }}"
+    lab_overlay: "{{ lab_dir }}/{{ lab_platform.name }}.qcow2"
+    lab_pidfile: "{{ lab_dir }}/{{ lab_platform.name }}.pid"
+    lab_monitor: "{{ lab_dir }}/{{ lab_platform.name }}-monitor.sock"
+  tasks:
+    # Safe to run when nothing exists (Molecule destroys before create, too).
+    - name: Read the QEMU pidfile
+      ansible.builtin.slurp:
+        src: "{{ lab_pidfile }}"
+      register: lab_pid_file
+      failed_when: false
+
+    - name: Stop QEMU
+      when: lab_pid_file.content is defined
+      vars:
+        lab_pid: "{{ lab_pid_file.content | b64decode | trim }}"
+      block:
+        - name: Kill the QEMU process
+          ansible.builtin.command:
+            argv: [kill, "{{ lab_pid }}"]
+          register: lab_kill
+          changed_when: lab_kill.rc == 0
+          failed_when: false
+
+        - name: Wait for QEMU to exit
+          ansible.builtin.wait_for:
+            path: "/proc/{{ lab_pid }}/status"
+            state: absent
+            timeout: 60
+
+    # The box image stays cached in lab_dir; only this run's disk goes.
+    - name: Remove the VM disk, pidfile and monitor socket
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ lab_overlay }}"
+        - "{{ lab_pidfile }}"
+        - "{{ lab_monitor }}"
+
+    - name: Remove the Molecule instance config
+      ansible.builtin.file:
+        path: "{{ molecule_instance_config }}"
+        state: absent

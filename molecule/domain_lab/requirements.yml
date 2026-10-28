@@ -1,0 +1,5 @@
+collections:
+  - name: ansible.windows   # win_powershell, win_feature, win_reboot, win_dns_client (and the roles under test)
+    version: '>=2.0.0'
+  - name: microsoft.ad      # microsoft.ad.domain promotes the VM to a DC
+    version: '>=1.6.0'

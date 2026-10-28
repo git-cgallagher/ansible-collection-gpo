@@ -1,0 +1,26 @@
+---
+- name: Verify the export of a fresh domain
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_manifest: "{{ lookup('ansible.builtin.file', lab_dir ~ '/gpo-repo/gpo-manifest.json') | from_json }}"
+    lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
+  tasks:
+    - name: Check the manifest describes the fresh domain's default GPOs and links
+      ansible.builtin.assert:
+        that:
+          - lab_manifest.domain == lab_domain
+          - lab_manifest.netbios == lab_netbios
+          - "'Default Domain Policy' in lab_manifest.gpos"
+          - "'Default Domain Controllers Policy' in lab_manifest.gpos"
+          - lab_root_dn in (lab_manifest.soms | map(attribute='target'))
+          - "'OU=Domain Controllers,' ~ lab_root_dn in (lab_manifest.soms | map(attribute='target'))"
+        fail_msg: "Unexpected manifest: {{ lab_manifest | to_nice_json }}"
+
+    - name: Check both default GPOs were exported as backup folders
+      ansible.builtin.stat:
+        path: "{{ lab_dir }}/gpo-repo/gpos/{{ item }}/manifest.xml"
+      loop: ['Default Domain Policy', 'Default Domain Controllers Policy']
+      register: lab_backup_folders
+      failed_when: not lab_backup_folders.stat.exists
+      delegate_to: localhost

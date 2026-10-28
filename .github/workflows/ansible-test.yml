@@ -30,7 +30,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           # Paths that are NOT in the tarball (galaxy.yml build_ignore).
-          ignore='^(\.github/|tests/|AGENTS\.md$|\.ansible-lint$|\.yamllint$|\.gitignore$)'
+          ignore='^(\.github/|molecule/|tests/|AGENTS\.md$|\.ansible-lint$|\.yamllint$|\.gitignore$)'
           shipped=$(git diff --name-only "$BASE"...HEAD | grep -Ev "$ignore" || true)
           if [ -z "$shipped" ]; then echo "No shipped files changed; no release needed."; exit 0; fi
           echo "Shipped files changed:"; echo "$shipped" | sed 's/^/  /'
@@ -81,6 +81,8 @@ jobs:
       - run: |
           pip install ansible-core ansible-lint yamllint
           ansible-galaxy collection install -r requirements.yml
+          # The domain-lab scenario's playbooks use microsoft.ad modules.
+          ansible-galaxy collection install -r molecule/domain_lab/requirements.yml
       - run: yamllint .
       - run: ansible-lint
 

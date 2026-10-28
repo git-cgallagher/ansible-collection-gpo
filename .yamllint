@@ -2,6 +2,7 @@
 extends: default
 ignore: |
   collections/
+  .molecule-collections/
   .ansible/
   .cache/
 rules:
