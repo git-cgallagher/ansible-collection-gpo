@@ -1,0 +1,104 @@
+name: release
+
+# Keeps Galaxy in step with main. Idempotent, so it is safe to re-run:
+#   - publishes galaxy.yml's version if Galaxy doesn't have it yet
+#   - creates the v<version> tag + GitHub release if they are missing
+#
+# ⚠️ Manual-only until GALAXY_API_KEY is set in the main-only 'galaxy'
+# environment (issue #3). The lab validation it also waited for passed on
+# 2026-10-28. Once the key exists, restore the isc-style triggers:
+#
+#   workflow_run:
+#     workflows: [ansible-test]
+#     types: [completed]
+#     branches: [main]
+#   schedule:
+#     - cron: '0 14 * * 2'
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # tag + GitHub release only
+
+concurrency:
+  group: galaxy-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # After CI: only for a green run triggered by a push to main (a merge).
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    # GALAXY_API_KEY lives in this environment, which only main may deploy to.
+    environment: galaxy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - run: pip install "ansible-core>=2.18"
+
+      - name: Read the collection version
+        id: meta
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          g = yaml.safe_load(open('galaxy.yml'))
+          print(f"namespace={g['namespace']}")
+          print(f"name={g['name']}")
+          print(f"version={g['version']}")
+          PY
+
+      - name: Is this version on Galaxy?
+        id: galaxy
+        env:
+          NS: ${{ steps.meta.outputs.namespace }}
+          NAME: ${{ steps.meta.outputs.name }}
+          VER: ${{ steps.meta.outputs.version }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/index/$NS/$NAME/versions/$VER/")
+          case "$code" in
+            200) echo "published=true" >> "$GITHUB_OUTPUT"; echo "$NS.$NAME $VER is already on Galaxy" ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT"; echo "$NS.$NAME $VER is not on Galaxy yet" ;;
+            *) echo "::error::Galaxy answered HTTP $code; not guessing"; exit 1 ;;
+          esac
+
+      - name: Build the collection
+        run: ansible-galaxy collection build --force
+
+      - name: Publish to Galaxy
+        if: steps.galaxy.outputs.published == 'false'
+        env:
+          GALAXY_API_KEY: ${{ secrets.GALAXY_API_KEY }}
+          TARBALL: ${{ steps.meta.outputs.namespace }}-${{ steps.meta.outputs.name }}-${{ steps.meta.outputs.version }}.tar.gz
+        run: |
+          if [ -z "$GALAXY_API_KEY" ]; then
+            echo "::error::Secret GALAXY_API_KEY is not set in the 'galaxy' environment (Settings > Environments > galaxy)"
+            exit 1
+          fi
+          ansible-galaxy collection publish "$TARBALL" --api-key "$GALAXY_API_KEY"
+
+      - name: Tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.meta.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          TARBALL: ${{ steps.meta.outputs.namespace }}-${{ steps.meta.outputs.name }}-${{ steps.meta.outputs.version }}.tar.gz
+        run: |
+          if gh release view "v$VER" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VER already exists"; exit 0
+          fi
+          # Notes = this version's CHANGELOG section.
+          awk -v v="$VER" '$0 ~ "^## "v"( |$)" {f=1; next} /^## / && f {exit} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md" > notes.md
+          gh release create "v$VER" "$TARBALL" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+            --title "$VER" --notes-file notes.md

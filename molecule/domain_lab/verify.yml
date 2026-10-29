@@ -1,0 +1,229 @@
+---
+- name: Verify the domain converged back to the authored state
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    lab_repo_after: "{{ lab_dir }}/gpo-repo-after"
+  tasks:
+    # 1. The live domain, read through GPMC/AD — independent of the roles.
+    - name: Check the live domain against the fixture
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/assert_domain.ps1') }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_assert
+
+    - name: Show what was observed
+      ansible.builtin.debug:
+        var: lab_assert.result.observed
+
+    - name: Require the domain to match the authored state
+      ansible.builtin.assert:
+        that: lab_assert.result.failures | length == 0
+        fail_msg: "{{ lab_assert.result.failures }}"
+
+    # Scenario: the restored link order puts the password policy back above
+    # Default Domain Policy, so its settings are what the domain enforces again.
+    - name: Read the effective domain password policy after the import
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_restored
+
+    - name: Check the authored password policy is back in force
+      ansible.builtin.assert:
+        that:
+          - lab_policy_restored.result.min_length == 14
+          - lab_policy_restored.result.lockout_threshold == 5
+          - lab_policy_restored.result.complexity
+        fail_msg: "Effective policy after the import: {{ lab_policy_restored.result }}"
+
+    # 2. A converged domain needs no further actions.
+    - name: Re-plan the import (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_report_only: true
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true
+
+    - name: Check nothing is left to do
+      ansible.builtin.assert:
+        that: gpo_import_run.result.actions | length == 0
+        fail_msg: "Still planned after converge: {{ gpo_import_run.result.actions }}"
+
+    # 3. Round trip: exporting the converged domain must reproduce the
+    #    pre-drift export. The backup role compares against the host's state
+    #    from prepare.yml, so "manifest unchanged" is an exact topology match.
+    - name: Start from an empty re-export directory
+      ansible.builtin.file:
+        path: "{{ lab_repo_after }}"
+        state: absent
+      delegate_to: localhost
+
+    - name: Re-export the converged domain
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo_after }}"
+
+    # Import-GPO may re-serialize files (e.g. GptTmpl.inf) even when the
+    # settings are identical; this records which GPOs that happened to.
+    - name: Report GPOs whose exported content changed byte-wise after Import-GPO
+      ansible.builtin.debug:
+        msg: "{{ gpo_backup_export.result.shipped | map(attribute='name') | list }}"
+
+    - name: Check links, precedence, filtering, WMI filters and status round-tripped exactly
+      block:
+        - name: Require an unchanged manifest
+          ansible.builtin.assert:
+            that: not gpo_backup_export.result.manifest_changed
+            quiet: true
+      rescue:
+        - name: Show the pre-drift manifest
+          ansible.builtin.debug:
+            msg: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
+
+        - name: Show the post-import manifest
+          ansible.builtin.debug:
+            msg: "{{ lookup('ansible.builtin.file', lab_repo_after ~ '/gpo-manifest.json') | from_json }}"
+
+        - name: Fail on the topology mismatch
+          ansible.builtin.fail:
+            msg: The post-import manifest differs from the pre-drift one (both shown above).
+
+    # 4. Export stability after an import: the next export ships nothing.
+    - name: Export once more
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo_after }}"
+
+    - name: Check the export is stable
+      ansible.builtin.assert:
+        that:
+          - not gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | length == 0
+          - not gpo_backup_export.result.manifest_changed
+        fail_msg: "Export not stable after import: {{ gpo_backup_export.result | to_nice_json }}"
+
+# Scenario: promoting a GPO between environments. Restricted Groups members are
+# SIDs in a security setting, so Import-GPO translates them through a migration
+# table. Mapping the workstation admins group onto the helpdesk group inside
+# one domain exercises the same mechanism (and gpo_import's migration-table and
+# filtered/forced paths) that maps lab groups onto production ones.
+- name: Import through a migration table
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    lab_migtable_remote: 'C:\ProgramData\gpo-iac\lab-helpdesk.migtable'
+  tasks:
+    - name: Build a migration table from the Workstation Local Admins GPO (GPMC API)
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/new_migtable.ps1') }}"
+        parameters:
+          Domain: "{{ lab_domain }}"
+          GpoName: "{{ lab_fixture.gpo_ws_admins }}"
+          SourceName: "{{ lab_fixture.ws_admins_group }}"
+          DestinationName: "{{ lab_fixture.helpdesk_group }}"
+          Path: "{{ lab_migtable_remote }}"
+      register: lab_migtable
+
+    - name: Show the migration table
+      ansible.builtin.debug:
+        var: lab_migtable.result
+
+    - name: Put the migration table in the repo, where a real one would live
+      ansible.builtin.fetch:
+        src: "{{ lab_migtable_remote }}"
+        dest: "{{ lab_repo }}/migtables/helpdesk.migtable"
+        flat: true
+
+    - name: Import the Workstation Local Admins GPO through the migration table
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_gpos: ["{{ lab_fixture.gpo_ws_admins }}"]
+        gpo_import_force: true
+        gpo_import_migration_table: migtables/helpdesk.migtable
+
+    - name: Read the Restricted Groups members and the groups' SIDs
+      ansible.windows.win_powershell:
+        script: &lab_read_members |
+          param([string]$GpoName, [string[]]$Groups)
+          $Ansible.Changed = $false
+          $gpo = Get-GPO -Name $GpoName
+          $inf = Join-Path $env:SystemRoot ('SYSVOL\domain\Policies\{' + $gpo.Id.ToString().ToUpperInvariant() +
+              '}\Machine\Microsoft\Windows NT\SecEdit\GptTmpl.inf')
+          $line = @(Get-Content -LiteralPath $inf | Where-Object { $_.StartsWith('*S-1-5-32-544__Members') }) -join ''
+          $sids = @{}
+          foreach ($g in $Groups) { $sids[$g] = (Get-ADGroup -Identity $g).SID.Value }
+          [ordered]@{
+              line = $line
+              members = @(($line -split '=', 2)[-1] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ })
+              sids = $sids
+          }
+        parameters: &lab_read_members_params
+          GpoName: "{{ lab_fixture.gpo_ws_admins }}"
+          Groups: ["{{ lab_fixture.ws_admins_group }}", "{{ lab_fixture.helpdesk_group }}"]
+      register: lab_members_mapped
+
+    - name: Check the migration table translated the member
+      ansible.builtin.assert:
+        that:
+          - gpo_import_run.result.imported == 1
+          - lab_out.sids[lab_fixture.helpdesk_group] in lab_out.members
+          - lab_out.sids[lab_fixture.ws_admins_group] not in lab_out.members
+        fail_msg: "After the mapped import: {{ lab_out }}"
+      vars:
+        lab_out: "{{ lab_members_mapped.output | first }}"
+
+    # Positive change detection: every other "nothing ships" assertion would
+    # also pass if hashing silently returned ''. The mapped import really
+    # changed this GPO's content, so a backup now has to ship it. (Into
+    # gpo-repo-after: gpo-repo is the source the next import restores from.)
+    - name: Export the domain after the mapped import
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_dir }}/gpo-repo-after"
+
+    - name: Check the changed GPO, and only it, was exported
+      ansible.builtin.assert:
+        that:
+          - gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | map(attribute='name') | list == [lab_fixture.gpo_ws_admins]
+        fail_msg: "Expected exactly {{ lab_fixture.gpo_ws_admins }} to ship: {{ gpo_backup_export.result.shipped }}"
+
+    - name: Import it again without the migration table
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_gpos: ["{{ lab_fixture.gpo_ws_admins }}"]
+        gpo_import_force: true
+
+    - name: Read the Restricted Groups members again
+      ansible.windows.win_powershell:
+        script: *lab_read_members
+        parameters: *lab_read_members_params
+      register: lab_members_restored
+
+    - name: Check the original member is back
+      ansible.builtin.assert:
+        that:
+          - lab_out.sids[lab_fixture.ws_admins_group] in lab_out.members
+          - lab_out.sids[lab_fixture.helpdesk_group] not in lab_out.members
+        fail_msg: "After the unmapped import: {{ lab_out }}"
+      vars:
+        lab_out: "{{ lab_members_restored.output | first }}"

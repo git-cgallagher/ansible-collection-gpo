@@ -1,0 +1,19 @@
+---
+# Every variable is documented in meta/argument_specs.yml
+# (`ansible-doc -t role git_cgallagher.gpo.gpo_backup`). Required, no default:
+# gpo_backup_domain, gpo_backup_repo_dir.
+
+# DC to run against; empty = the domain's PDC emulator.
+gpo_backup_server: ''
+
+# Limit the export to these GPO display names (empty = every GPO).
+gpo_backup_gpos: []
+
+# Re-ship every GPO even when its content hash is unchanged.
+gpo_backup_full_export: false
+
+# Remove repo folders of GPOs that no longer exist in the domain.
+gpo_backup_prune_deleted: false
+
+# Working directory on the management host.
+gpo_backup_workdir: 'C:\ProgramData\gpo-iac\backup'

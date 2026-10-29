@@ -1,0 +1,120 @@
+name: domain-lab
+
+# End-to-end test against a real Windows Server 2022 domain controller:
+# Molecule boots the VM under QEMU/KVM on the runner, promotes it to the first
+# DC of a new forest, and runs gpo_backup / gpo_import against it. About 14 min.
+#
+# Not a required check: it is path-filtered (a required check that doesn't run
+# blocks merges forever) and depends on a third-party box download. Promote it
+# to required after four consecutive green weekly runs (AGENTS.md).
+
+on:
+  pull_request:
+    paths:
+      - roles/**
+      - molecule/**
+      - requirements.yml
+      - .github/workflows/domain-lab.yml
+  push:
+    branches: [main]
+    paths:
+      - roles/**
+      - molecule/**
+      - requirements.yml
+      - .github/workflows/domain-lab.yml
+  # Weekly: catches box, collection and runner-image changes.
+  schedule:
+    - cron: '0 15 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to the same PR supersedes the 40-minute run in flight.
+concurrency:
+  group: domain-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PY_COLORS: '1'
+  ANSIBLE_FORCE_COLOR: '1'
+  # Stream Ansible's output (retry lines included) instead of buffering it
+  # until the play ends; a stalled step is then visible in the live log.
+  PYTHONUNBUFFERED: '1'
+  # The runner's temp disk: the box (~6 GB, plus ~6 GB while unpacking) and
+  # the VM disk don't fit on the ~14 GB root filesystem.
+  GPO_LAB_DIR: /mnt/gpo-lab
+
+jobs:
+  molecule:
+    name: molecule domain_lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.13'
+
+      - name: Enable KVM and install QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+          ls -l /dev/kvm
+
+      - name: Prepare the lab directory on the temp disk
+        run: |
+          sudo mkdir -p "$GPO_LAB_DIR"
+          sudo chown "$USER" "$GPO_LAB_DIR"
+          df -h "$GPO_LAB_DIR" /
+
+      - name: Install Ansible, Molecule and the test collections
+        run: |
+          pip install ansible-core molecule pypsrp
+          ansible-galaxy collection install -r molecule/domain_lab/requirements.yml
+
+      - name: Expose the checkout as git_cgallagher.gpo
+        run: |
+          mkdir -p .molecule-collections/ansible_collections/git_cgallagher
+          ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/gpo
+
+      # --destroy=never: keep the VM for the diagnostics below; the last step
+      # destroys it either way.
+      # A hang must become a failure, so the screen capture below runs.
+      - name: molecule test
+        timeout-minutes: 75
+        run: molecule test -s domain_lab --destroy=never
+
+      # nc needs -N (close on stdin EOF) and a timeout: the QEMU monitor keeps
+      # the socket open, so plain `nc -U` never exits (hung a run for 30 min).
+      - name: Capture the VM screen
+        if: failure()
+        timeout-minutes: 2
+        run: |
+          sock="$GPO_LAB_DIR/dc01-monitor.sock"
+          if [ -S "$sock" ]; then
+            { printf 'screendump %s/screen.ppm\n' "$GPO_LAB_DIR"; sleep 3; } | timeout 20 nc -N -U "$sock" || true
+          fi
+          ls -la "$GPO_LAB_DIR" || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: domain-lab-diagnostics
+          path: |
+            ${{ env.GPO_LAB_DIR }}/screen.ppm
+            ${{ env.GPO_LAB_DIR }}/gpo-repo*/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: molecule destroy
+        if: always()
+        run: molecule destroy -s domain_lab

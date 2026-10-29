@@ -1,0 +1,67 @@
+---
+# One Windows Server 2022 VM (QEMU/KVM) promoted to the first DC of a new
+# forest; gpo_backup and gpo_import then run against it for real. Needs a
+# Linux host with /dev/kvm and ~20 GB free in $GPO_LAB_DIR — see README.md.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ${MOLECULE_SCENARIO_DIRECTORY}/requirements.yml
+driver:
+  name: default
+  options:
+    managed: true
+platforms:
+  - name: dc01
+    # jborean93's packer-windoze box: a sysprepped Windows Server 2022
+    # evaluation image built for Ansible WinRM/PSRP testing (microsoft.ad's
+    # own integration tests use it). Pinned by version + SHA-256.
+    box_url: https://vagrantcloud.com/jborean93/boxes/WindowsServer2022/versions/1.2.0/providers/libvirt/amd64/vagrant.box
+    box_sha256: bc2e6a173390d4457e66ba30d5ffff7dbc87b849532bc0f41f4c1246f4e53bd4
+    box_user: vagrant
+    box_password: vagrant
+    memory_mb: 4096
+    cpus: 2
+    winrm_port: 5985
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/.molecule-collections:${MOLECULE_PROJECT_DIRECTORY}/collections:~/.ansible/collections
+  inventory:
+    host_vars:
+      dc01:
+        ansible_psrp_protocol: http
+        # Nested-virt VMs occasionally drop a connection; retry instead of failing.
+        ansible_psrp_reconnection_retries: 3
+    group_vars:
+      all:
+        # Box cache, VM disk, pidfile, monitor socket and the exported GPO
+        # repos all live here (CI points it at the runner's large /mnt disk).
+        lab_dir: "{{ lookup('ansible.builtin.env', 'GPO_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/gpo-domain-lab', true) }}"
+        lab_domain: gpolab.test
+        lab_netbios: GPOLAB
+        lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
+        # Throwaway VM reachable only on the runner's loopback.
+        lab_dsrm_password: Example-not-secret-1
+        # The authored state files/lab_fixture.ps1 seeds and assert_domain.ps1
+        # checks (passed to both as JSON, and used by the YAML assertions).
+        lab_fixture:
+          ou: IacLab
+          group: GG-IacLab-Servers                     # security filtering target
+          server_admins_group: GG-IacLab-Server-Admins
+          ws_admins_group: GG-IacLab-Workstation-Admins
+          helpdesk_group: GG-IacLab-Helpdesk           # migration-table destination
+          gpo_baseline: IacLab - Server Baseline
+          gpo_rdp: IacLab - RDP Settings
+          # Account policy only applies to domain accounts from a GPO linked at
+          # the domain root; this one sits above Default Domain Policy.
+          gpo_password: IacLab - Domain Password Policy
+          gpo_server_admins: IacLab - Server Local Admins       # GPP Local Users and Groups
+          gpo_ws_admins: IacLab - Workstation Local Admins      # Restricted Groups
+          wmi_filter: IacLab Server OS
+          wmi_description: Member servers and domain controllers
+          wmi_namespace: 'root\CIMv2'
+          wmi_query: 'SELECT * FROM Win32_OperatingSystem WHERE ProductType > 1'
+verifier:
+  name: ansible
+scenario:
+  test_sequence: [dependency, destroy, syntax, create, prepare, converge, idempotence, verify, destroy]

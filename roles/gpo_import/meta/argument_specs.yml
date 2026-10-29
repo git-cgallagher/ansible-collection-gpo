@@ -1,0 +1,86 @@
+---
+argument_specs:
+  main:
+    short_description: Converge a domain on exported GPOs, links, precedence and filtering
+    description:
+      - Copies an export made by M(git_cgallagher.gpo.gpo_backup) to a Windows management host with RSAT and runs
+        C(Import-GPO -CreateIfNeeded) for every GPO whose backup content changed since this role last imported it
+        (or that is missing), optionally through a migration table for another domain.
+      - Then reconciles what an import never carries, from C(gpo-manifest.json). That covers GPO status, WMI filter
+        links, security filtering (removed Apply trustees are downgraded to Read, never stripped, because of
+        MS16-072), and each managed container's whole ordered link list and block-inheritance.
+      - Refuses any export that contains a Group Policy Preferences C(cpassword).
+      - Supports check mode; check mode and O(gpo_import_report_only) report every action without changing the
+        domain.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      gpo_import_domain:
+        type: str
+        required: true
+        description:
+          - DNS name of the target domain, for example V(prod.example.com).
+      gpo_import_source_dir:
+        type: path
+        required: true
+        description:
+          - Directory on the controller that holds C(gpos/) and the manifest, normally the repository working copy.
+      gpo_import_server:
+        type: str
+        default: ''
+        description:
+          - Domain controller to run against.
+          - Empty means the domain's PDC emulator, which avoids AD-versus-SYSVOL replication races.
+      gpo_import_manifest:
+        type: str
+        default: gpo-manifest.json
+        description:
+          - Manifest path, relative to O(gpo_import_source_dir).
+      gpo_import_migration_table:
+        type: str
+        default: ''
+        description:
+          - Migration table (C(.migtable)) for importing into a different domain. Commit one per target environment.
+          - A path relative to O(gpo_import_source_dir), or an absolute path on the management host.
+          - Migration tables translate principals and UNC paths in security settings, Restricted Groups and
+            software installation; they do B(not) translate Group Policy Preferences XML.
+      gpo_import_report_only:
+        type: bool
+        default: false
+        description:
+          - Report every action without changing the domain (a plan). Check mode implies it.
+      gpo_import_remove_unmanaged_links:
+        type: bool
+        default: false
+        description:
+          - On containers listed in the manifest, remove links that the manifest doesn't list.
+          - Leave this off while adopting an existing domain.
+      gpo_import_create_wmi_filters:
+        type: bool
+        default: false
+        description:
+          - Create WMI filters named in the manifest that don't exist in the target domain (single-query filters).
+      gpo_import_force:
+        type: bool
+        default: false
+        description:
+          - Re-import every selected GPO regardless of the recorded state.
+          - The first run in a domain imports every GPO once anyway, because no state exists yet.
+      gpo_import_gpos:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Limit content import and GPO property reconciliation to these GPO display names. Empty means every GPO
+            in the manifest.
+          - Links are still reconciled for every container in the manifest.
+      gpo_import_workdir:
+        type: str
+        default: 'C:\ProgramData\gpo-iac\import'
+        description:
+          - Staging directory on the Windows management host; the export is copied here.
+      gpo_import_state_dir:
+        type: str
+        default: 'C:\ProgramData\gpo-iac'
+        description:
+          - Directory on the management host for the per-domain state file (content hashes of the last import).

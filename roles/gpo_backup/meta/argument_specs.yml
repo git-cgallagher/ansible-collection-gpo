@@ -1,0 +1,55 @@
+---
+argument_specs:
+  main:
+    short_description: Export a domain's GPOs and their links, precedence and filtering to a Git working copy
+    description:
+      - Runs C(Backup-GPO) for every GPO (one self-contained backup folder each) on a Windows management host
+        with RSAT, and writes C(gpo-manifest.json), which records what C(Import-GPO) never carries.
+        The manifest covers link targets, link order (precedence), enforced/enabled links, block-inheritance,
+        security filtering, WMI filters and GPO status.
+      - Only GPOs whose settings content changed since the last run are re-exported (content-hash state on the
+        management host), so the repository's Git diff shows real changes.
+      - The export is zipped, fetched and unpacked into O(gpo_backup_repo_dir) on the controller.
+    author:
+      - Chris Gallagher (@git-cgallagher)
+    options:
+      gpo_backup_domain:
+        type: str
+        required: true
+        description:
+          - DNS name of the domain to export, for example V(lab.example.com).
+      gpo_backup_repo_dir:
+        type: path
+        required: true
+        description:
+          - Directory on the controller that receives C(gpos/<GPO name>/...) and C(gpo-manifest.json),
+            normally the working copy of the repository that holds your GPOs.
+      gpo_backup_server:
+        type: str
+        default: ''
+        description:
+          - Domain controller to run against.
+          - Empty means the domain's PDC emulator, which avoids AD-versus-SYSVOL replication races.
+      gpo_backup_gpos:
+        type: list
+        elements: str
+        default: []
+        description:
+          - Limit the export to these GPO display names. Empty exports every GPO.
+          - Deleted-GPO detection is skipped while filtering.
+      gpo_backup_full_export:
+        type: bool
+        default: false
+        description:
+          - Re-export every GPO even when its content hash is unchanged.
+      gpo_backup_prune_deleted:
+        type: bool
+        default: false
+        description:
+          - Remove the repository folders of GPOs that no longer exist in the domain.
+      gpo_backup_workdir:
+        type: str
+        default: 'C:\ProgramData\gpo-iac\backup'
+        description:
+          - Working directory on the Windows management host (staging, the per-domain state file of content
+            hashes, and the export zip).

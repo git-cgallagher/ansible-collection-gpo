@@ -1,0 +1,127 @@
+---
+# Run by .github/workflows/argument-specs.yml against the built and installed
+# collection. Needs no Windows host: everything here fails (or passes) before
+# a role's first task would connect anywhere.
+
+- name: Check each role's argument spec against its defaults
+  hosts: localhost
+  gather_facts: false
+  vars:
+    spec_roles_dir: "{{ playbook_dir }}/../../roles"
+  tasks:
+    - name: Check one role
+      ansible.builtin.include_tasks: check_role.yml
+      loop: [gpo_backup, gpo_import]
+      loop_control:
+        loop_var: spec_role
+
+- name: Exercise the argument specs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    spec_roles_dir: "{{ playbook_dir }}/../../roles"
+    spec_backup: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_backup/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+    spec_import: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/gpo_import/meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+  tasks:
+    # --- valid input passes ---------------------------------------------------------
+    - name: Accept a minimal gpo_backup call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_backup }}"
+        provided_arguments:
+          gpo_backup_domain: lab.example.com
+          gpo_backup_repo_dir: /srv/gpo-repo
+
+    - name: Accept a full gpo_import call
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ spec_import }}"
+        provided_arguments:
+          gpo_import_domain: prod.example.com
+          gpo_import_source_dir: /srv/gpo-repo
+          gpo_import_server: dc01.prod.example.com
+          gpo_import_migration_table: migtables/prod.migtable
+          gpo_import_report_only: true
+          gpo_import_remove_unmanaged_links: false
+          gpo_import_create_wmi_filters: true
+          gpo_import_force: false
+          gpo_import_gpos: [SEC - Server Baseline]
+
+    # --- invalid input is rejected by the roles themselves --------------------------
+    # include_role runs the role's implicit "Validating arguments" task first; a
+    # failure there carries argument_errors, which tells it apart from a later
+    # task failing.
+    - name: Reject gpo_backup without its required domain
+      block:
+        - name: Include gpo_backup without gpo_backup_domain
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_backup
+          vars:
+            gpo_backup_repo_dir: /srv/gpo-repo
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: gpo_backup ran without gpo_backup_domain
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('gpo_backup_domain')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a non-boolean gpo_import flag
+      block:
+        - name: Include gpo_import with gpo_import_report_only=maybe
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: prod.example.com
+            gpo_import_source_dir: /srv/gpo-repo
+            gpo_import_report_only: maybe
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: gpo_import accepted gpo_import_report_only=maybe
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('gpo_import_report_only')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    - name: Reject a gpo_import GPO filter that isn't a list
+      block:
+        - name: Include gpo_import with a mapping for gpo_import_gpos
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: prod.example.com
+            gpo_import_source_dir: /srv/gpo-repo
+            gpo_import_gpos:
+              name: SEC - Server Baseline
+
+        - name: Fail because validation accepted it
+          ansible.builtin.fail:
+            msg: gpo_import accepted a mapping for gpo_import_gpos
+      rescue:
+        - name: Check the argument spec rejected it
+          ansible.builtin.assert:
+            that: ansible_failed_result.argument_errors | default([]) | join(' ') is search('gpo_import_gpos')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"
+
+    # A spec can't say "non-empty"; the role's first task does.
+    - name: Reject an empty gpo_import domain
+      block:
+        - name: Include gpo_import with an empty domain
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: ''
+            gpo_import_source_dir: /srv/gpo-repo
+
+        - name: Fail because the role accepted it
+          ansible.builtin.fail:
+            msg: gpo_import ran with an empty domain
+      rescue:
+        - name: Check the role's own check rejected it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.argument_errors is not defined
+              - ansible_failed_result.msg | default('') is search('must be non-empty')
+            fail_msg: "Unexpected failure: {{ ansible_failed_result }}"

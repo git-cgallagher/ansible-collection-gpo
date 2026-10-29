@@ -1,0 +1,331 @@
+---
+# The box's local accounts become domain accounts when it's promoted to the
+# first DC of a new forest, so the connection keeps working as `vagrant`
+# (PSRP + NTLM, which unlike Basic auth works for domain accounts).
+- name: Promote the VM to the first DC of a new forest
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+    - name: Point DNS at itself (the DC will host the domain's DNS)
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers: [127.0.0.1]
+
+    # GPMC + AD PowerShell up front so the post-reboot readiness check can use them.
+    - name: Install AD DS, GPMC and the AD PowerShell module
+      ansible.windows.win_feature:
+        name: [AD-Domain-Services, GPMC, RSAT-AD-PowerShell]
+        include_management_tools: true
+        state: present
+
+    - name: Create the forest
+      microsoft.ad.domain:
+        dns_domain_name: "{{ lab_domain }}"
+        domain_netbios_name: "{{ lab_netbios }}"
+        safe_mode_password: "{{ lab_dsrm_password }}"
+        reboot: false
+      register: lab_forest
+
+    # "Available" means ADWS answers (the AD module), SYSVOL is initialised
+    # and shared, and GPMC can enumerate GPOs — not merely "WinRM is up".
+    # Any error, terminating or not, must exit non-zero.
+    - name: Reboot and wait until AD, SYSVOL and Group Policy are available
+      ansible.windows.win_reboot:
+        reboot_timeout: 1800
+        test_command: >-
+          try {
+          Import-Module ActiveDirectory, GroupPolicy -ErrorAction Stop;
+          $null = Get-ADDomain -ErrorAction Stop;
+          $netlogon = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop;
+          if ($netlogon.SysvolReady -ne 1) { exit 1 };
+          if (-not (Get-SmbShare -Name SYSVOL -ErrorAction SilentlyContinue)) { exit 1 };
+          $null = Get-GPO -All -ErrorAction Stop;
+          exit 0
+          } catch { exit 1 }
+      when: lab_forest.reboot_required | default(false)
+
+    # The share being up isn't enough: Group Policy Preferences (and other
+    # GPMC writes) go through the *domain's* DFS path, which needs the DFS
+    # referral service. Right after promotion that path can still fail with
+    # "The network path was not found" (it failed one CI run 6 s after the
+    # reboot check passed).
+    - name: Wait until the domain SYSVOL path (\\domain\SYSVOL) resolves
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain)
+          $Ansible.Changed = $false
+          if (-not (Test-Path -LiteralPath "\\$Domain\SYSVOL\$Domain\Policies")) {
+              throw "\\$Domain\SYSVOL\$Domain\Policies doesn't resolve yet"
+          }
+        parameters:
+          Domain: "{{ lab_domain }}"
+      register: lab_sysvol_path
+      until: lab_sysvol_path is succeeded
+      retries: 60
+      delay: 10
+
+    - name: Make the connection account a Domain Admin and GPO creator
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          foreach ($group in 'Domain Admins', 'Group Policy Creator Owners') {
+              $members = @(Get-ADGroupMember -Identity $group | ForEach-Object { $_.SamAccountName })
+              if ($members -notcontains $env:USERNAME) {
+                  Add-ADGroupMember -Identity $group -Members $env:USERNAME
+                  $Ansible.Changed = $true
+              }
+          }
+
+    # The PSRP session's logon token predates the membership change.
+    - name: Reconnect so the new group membership is in the logon token
+      ansible.builtin.meta: reset_connection
+
+    - name: Show the domain
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $d = Get-ADDomain
+          [ordered]@{
+              dns_root = $d.DNSRoot
+              pdc      = $d.PDCEmulator
+              gpos     = @(Get-GPO -All | ForEach-Object { $_.DisplayName } | Sort-Object)
+              os       = (Get-CimInstance -ClassName Win32_OperatingSystem).Caption
+          }
+      register: lab_domain_info
+
+    - name: Report the domain
+      ansible.builtin.debug:
+        var: lab_domain_info.output
+
+# Authored state -> export -> out-of-band drift. converge.yml then has to put
+# the domain back from the export alone.
+- name: Seed the authored state, export it with gpo_backup, then drift the domain
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    # Manifest link targets are relative to the domain root ('' = the root).
+    lab_ou_rel: "OU={{ lab_fixture.ou }}"
+  tasks:
+    - name: Seed OUs, groups, a WMI filter and five GPOs with links and filtering
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Seed
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_seed
+
+    - name: Show the session's groups and whether AD Web Services may modify a GPO object
+      ansible.builtin.debug:
+        var: lab_seed.result.diagnostics
+
+    # Fixture sanity before anything is exported: the hand-written password
+    # policy is a valid security template and, linked above Default Domain
+    # Policy, it is what the domain actually enforces.
+    - name: Read the effective domain password policy after seeding
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_seeded
+
+    - name: Check the seeded password policy is the one in force
+      ansible.builtin.assert:
+        that:
+          - lab_policy_seeded.result.min_length == 14
+          - lab_policy_seeded.result.lockout_threshold == 5
+          - lab_policy_seeded.result.complexity
+        fail_msg: "Effective policy after seeding: {{ lab_policy_seeded.result }}"
+
+    - name: Start from an empty export directory
+      ansible.builtin.file:
+        path: "{{ lab_repo }}"
+        state: absent
+      delegate_to: localhost
+
+    # Full export: ships every GPO even if the host's backup state already
+    # knows it (a re-run of prepare on the same VM).
+    - name: Export the authored state
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+        gpo_backup_full_export: true
+
+    - name: Check the manifest captured links, precedence, filtering, WMI filter and status
+      ansible.builtin.assert:
+        that:
+          - lab_m.domain == lab_domain
+          - lab_m.root_dn == lab_root_dn
+          - lab_m.domain_sid is match('^S-1-5-21-')
+          - lab_m.gpos[lab_fixture.gpo_baseline].denied == []
+          - lab_m.gpos[lab_fixture.gpo_baseline].status == 'AllSettingsEnabled'
+          - lab_m.gpos[lab_fixture.gpo_baseline].wmi_filter == lab_fixture.wmi_filter
+          - "lab_m.gpos[lab_fixture.gpo_baseline].apply_to == [{'name': lab_fixture.group, 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_rdp].status == 'UserSettingsDisabled'
+          - "lab_m.gpos[lab_fixture.gpo_rdp].apply_to == [{'name': 'Authenticated Users', 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_password].status == 'AllSettingsEnabled'
+          - lab_fixture.gpo_server_admins in lab_m.gpos
+          - lab_fixture.gpo_ws_admins in lab_m.gpos
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].namespace == lab_fixture.wmi_namespace
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].query == lab_fixture.wmi_query
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].description == lab_fixture.wmi_description
+          - "lab_root.links == [{'gpo': lab_fixture.gpo_password, 'enforced': false, 'enabled': true},
+                                {'gpo': 'Default Domain Policy', 'enforced': false, 'enabled': true}]"
+          - "lab_servers.links == [{'gpo': lab_fixture.gpo_baseline, 'enforced': true, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_server_admins, 'enforced': false, 'enabled': true}]"
+          - not lab_servers.block_inheritance
+          - "lab_workstations.links == [{'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': false},
+                                        {'gpo': lab_fixture.gpo_ws_admins, 'enforced': false, 'enabled': true}]"
+          - lab_workstations.block_inheritance
+          # An OU with no links and no blocked inheritance isn't in the manifest.
+          - lab_m.soms | selectattr('target', 'equalto', lab_ou_rel) | list | length == 0
+        fail_msg: "Manifest doesn't match the fixture: {{ lab_m | to_nice_json }}"
+      vars:
+        lab_m: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
+        lab_root: "{{ lab_m.soms | selectattr('target', 'equalto', '') | first }}"
+        lab_servers: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Servers,' ~ lab_ou_rel) | first }}"
+        lab_workstations: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Workstations,' ~ lab_ou_rel) | first }}"
+
+    - name: Check every fixture GPO was exported as a backup folder
+      ansible.builtin.stat:
+        path: "{{ lab_repo }}/gpos/{{ item }}/manifest.xml"
+      loop: "{{ [lab_fixture.gpo_baseline, lab_fixture.gpo_rdp, lab_fixture.gpo_password,
+                 lab_fixture.gpo_server_admins, lab_fixture.gpo_ws_admins] }}"
+      register: lab_backup_folders
+      failed_when: not lab_backup_folders.stat.exists
+      delegate_to: localhost
+
+    - name: Export again without changes
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+
+    - name: Check an unchanged domain exports nothing (backup idempotence)
+      ansible.builtin.assert:
+        that:
+          - not gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | length == 0
+          - not gpo_backup_export.result.manifest_changed
+        fail_msg: "Second export wasn't a no-op: {{ gpo_backup_export.result | to_nice_json }}"
+
+    - name: Drift the domain out-of-band
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Drift
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_drift
+
+    # gpo_import clears a WMI filter link the same way; this shows whether
+    # GPMC's "set to none" worked or the LDAP fallback was needed.
+    - name: Show how the WMI filter link was cleared
+      ansible.builtin.debug:
+        var: lab_drift.result.diagnostics
+
+    # Precedence has real effect: with Default Domain Policy back on top, its
+    # weaker settings (7 characters, no lockout) win again.
+    - name: Read the effective domain password policy after the drift
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_drifted
+
+    - name: Check Default Domain Policy's settings now win
+      ansible.builtin.assert:
+        that:
+          - lab_policy_drifted.result.min_length == 7
+          - lab_policy_drifted.result.lockout_threshold == 0
+        fail_msg: "Effective policy after drift: {{ lab_policy_drifted.result }}"
+
+    - name: Plan the import against the drifted domain (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_report_only: true
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true
+
+    - name: Check the plan covers the drift
+      ansible.builtin.assert:
+        that:
+          - not gpo_import_run.changed
+          - gpo_import_run.result.report_only
+          - gpo_import_run.result.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "create WMI filter") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "remove unmanaged link") | list | length == 1
+        fail_msg: "Unexpected plan: {{ gpo_import_run.result | to_nice_json }}"
+
+    - name: Look for the deleted GPO after the report-only run
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $Ansible.Changed = $false
+          [bool](Get-GPO -All | Where-Object { $_.DisplayName -eq $Name })
+        parameters:
+          Name: "{{ lab_fixture.gpo_rdp }}"
+      register: lab_rdp_after_plan
+
+    - name: Check report-only touched nothing
+      ansible.builtin.assert:
+        that: not (lab_rdp_after_plan.output | first)
+        fail_msg: report-only mode recreated a GPO
+
+    # GPP cpassword is a decryptable secret; the import must refuse a backup
+    # that contains one, before touching the domain.
+    - name: Build a copy of the export with a cpassword planted in it
+      delegate_to: localhost
+      block:
+        - name: Copy the export
+          ansible.builtin.copy:
+            src: "{{ lab_repo }}/"
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/"
+            remote_src: true
+            mode: u=rwX,go=
+
+        - name: Plant a Groups.xml carrying cpassword
+          ansible.builtin.copy:
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/gpos/{{ lab_fixture.gpo_baseline }}/Groups.xml"
+            content: '<Groups><User name="x"><Properties cpassword="example-not-secret"/></User></Groups>'
+            mode: "0600"
+
+    - name: Import the poisoned export
+      block:
+        - name: Run gpo_import on it
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: "{{ lab_domain }}"
+            gpo_import_source_dir: "{{ lab_dir }}/gpo-repo-cpassword"
+            gpo_import_report_only: true
+
+        - name: Fail — the import should have refused
+          ansible.builtin.fail:
+            msg: gpo_import accepted a backup containing cpassword
+      rescue:
+        - name: Check it refused because of cpassword
+          ansible.builtin.assert:
+            that: ansible_failed_result | to_json is search('Refusing to import')
+            fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"

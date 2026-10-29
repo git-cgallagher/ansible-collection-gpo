@@ -1,0 +1,35 @@
+---
+# Every variable is documented in meta/argument_specs.yml
+# (`ansible-doc -t role git_cgallagher.gpo.gpo_import`). Required, no default:
+# gpo_import_domain, gpo_import_source_dir.
+
+# DC to run against; empty = the domain's PDC emulator.
+gpo_import_server: ''
+
+# Manifest path, relative to the source dir.
+gpo_import_manifest: 'gpo-manifest.json'
+
+# Migration table for cross-domain imports (relative to the source dir, or
+# absolute on the management host).
+gpo_import_migration_table: ''
+
+# Report every action without touching the domain. --check implies it.
+gpo_import_report_only: false
+
+# On manifest-managed containers, remove links the manifest doesn't list.
+gpo_import_remove_unmanaged_links: false
+
+# Create WMI filters named in the manifest when missing.
+gpo_import_create_wmi_filters: false
+
+# Re-import every selected GPO regardless of recorded state.
+gpo_import_force: false
+
+# Limit content import to these GPO display names (empty = all).
+gpo_import_gpos: []
+
+# Staging directory on the management host.
+gpo_import_workdir: 'C:\ProgramData\gpo-iac\import'
+
+# Per-domain state file directory on the management host.
+gpo_import_state_dir: 'C:\ProgramData\gpo-iac'

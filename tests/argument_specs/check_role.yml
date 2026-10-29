@@ -1,0 +1,35 @@
+---
+# Included once per role by validate.yml (spec_role = role name).
+- name: Load the role's argument spec and defaults
+  ansible.builtin.set_fact:
+    spec_main: "{{ (lookup('ansible.builtin.file', spec_roles_dir ~ '/' ~ spec_role ~ '/meta/argument_specs.yml') | from_yaml).argument_specs.main }}"
+    spec_defaults: "{{ lookup('ansible.builtin.file', spec_roles_dir ~ '/' ~ spec_role ~ '/defaults/main.yml') | from_yaml | default({}, true) }}"
+
+- name: Check the spec documents the role and every variable in defaults/main.yml
+  ansible.builtin.assert:
+    that:
+      - spec_main.short_description | default('') | length > 0
+      - spec_main.options | default({}) | length > 0
+      - spec_undocumented | length == 0
+    fail_msg: "{{ spec_role }}: undocumented defaults {{ spec_undocumented }} (or no short_description/options)"
+    quiet: true
+  vars:
+    spec_undocumented: "{{ spec_defaults.keys() | difference(spec_main.options.keys()) }}"
+
+# Required options have no default (so a missing one fails validation); every
+# other option documents exactly the default that defaults/main.yml sets.
+- name: Check each option's type, description and default
+  ansible.builtin.assert:
+    that:
+      - item.value.type is defined
+      - item.value.description | default([]) | length > 0
+      - (item.value.required | default(false)) != (item.key in spec_defaults)
+      - (item.value.required | default(false)) or (item.value.default is defined and item.value.default == spec_defaults[item.key])
+    fail_msg: >-
+      {{ spec_role }}.{{ item.key }}: needs a type and description; a required option must not be in
+      defaults/main.yml; any other option's spec default must equal defaults/main.yml
+      (spec {{ item.value.default | default('<none>') }}, defaults {{ spec_defaults[item.key] | default('<absent>') }}).
+    quiet: true
+  loop: "{{ spec_main.options | dict2items }}"
+  loop_control:
+    label: "{{ spec_role }}.{{ item.key }}"

@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  role_name: gpo_backup
+  author: Chris Gallagher
+  description: Export a domain's GPOs plus a links/precedence/filtering manifest into a Git working copy
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Windows
+      versions: [all]
+dependencies: []
