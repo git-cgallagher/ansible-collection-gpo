@@ -25,3 +25,7 @@ All variables are documented in
 validate them (`ansible-doc -t role git_cgallagher.gpo.gpo_import`); the
 workflow, manifest format and cross-domain story are in the
 [collection README](../../README.md) and [docs/design.md](../../docs/design.md).
+
+Its Molecule scenario,
+[`molecule/default`](https://github.com/git-cgallagher/ansible-collection-gpo/tree/main/roles/gpo_import/molecule/default),
+tests the import end to end against a real domain controller.

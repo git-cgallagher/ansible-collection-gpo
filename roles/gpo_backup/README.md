@@ -16,3 +16,7 @@ All variables are documented in
 validate them (`ansible-doc -t role git_cgallagher.gpo.gpo_backup`); the
 workflow and manifest format are in the
 [collection README](../../README.md).
+
+Its Molecule scenario,
+[`molecule/default`](https://github.com/git-cgallagher/ansible-collection-gpo/tree/main/roles/gpo_backup/molecule/default),
+tests the export end to end against a real domain controller.

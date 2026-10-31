@@ -1,0 +1,8 @@
+# Molecule scenario playbooks live inside their role (roles/<role>/molecule/),
+# so ansible-lint treats them as role code and wants every `register:` named
+# with the role's prefix. They're test playbooks, not role code: their lab_*
+# results never meet the role's variables. Add a line when another scenario
+# file starts registering results.
+roles/gpo_backup/molecule/default/verify.yml var-naming[no-role-prefix] skip
+roles/gpo_import/molecule/default/prepare.yml var-naming[no-role-prefix] skip
+roles/gpo_import/molecule/default/verify.yml var-naming[no-role-prefix] skip

@@ -1,0 +1,8 @@
+---
+# gpo_backup's scenario: seed a real domain, export it, and check the export
+# and its change detection (see README.md). The platform, provisioner,
+# inventory and the shared create/destroy playbooks come from the
+# repository's Molecule base config, .config/molecule/config.yml, which
+# Molecule merges under this file.
+scenario:
+  name: default

@@ -1,0 +1,148 @@
+---
+- name: Promote the VM to the first DC of a new forest
+  ansible.builtin.import_playbook: ../../../../tests/domain_lab/promote.yml
+
+- name: Seed the authored state
+  ansible.builtin.import_playbook: ../../../../tests/domain_lab/seed.yml
+
+# Authored state -> export -> out-of-band drift. converge.yml then has to put
+# the domain back from the export alone. (gpo_backup's own scenario checks
+# the export itself.)
+- name: Export the authored state with gpo_backup, then drift the domain
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+  tasks:
+    # Fixture sanity before anything is exported: the hand-written password
+    # policy is a valid security template and, linked above Default Domain
+    # Policy, it is what the domain actually enforces.
+    - name: Read the effective domain password policy after seeding
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_seeded
+
+    - name: Check the seeded password policy is the one in force
+      ansible.builtin.assert:
+        that:
+          - lab_policy_seeded.result.min_length == 14
+          - lab_policy_seeded.result.lockout_threshold == 5
+          - lab_policy_seeded.result.complexity
+        fail_msg: "Effective policy after seeding: {{ lab_policy_seeded.result }}"
+
+    - name: Start from an empty export directory
+      ansible.builtin.file:
+        path: "{{ lab_repo }}"
+        state: absent
+      delegate_to: localhost
+
+    # Full export: ships every GPO even if the host's backup state already
+    # knows it (a re-run of prepare on the same VM).
+    - name: Export the authored state
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+        gpo_backup_full_export: true
+
+    - name: Drift the domain out-of-band
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', lab_tests_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Drift
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_drift
+
+    # gpo_import clears a WMI filter link the same way; this shows whether
+    # GPMC's "set to none" worked or the LDAP fallback was needed.
+    - name: Show how the WMI filter link was cleared
+      ansible.builtin.debug:
+        var: lab_drift.result.diagnostics
+
+    # Precedence has real effect: with Default Domain Policy back on top, its
+    # weaker settings (7 characters, no lockout) win again.
+    - name: Read the effective domain password policy after the drift
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/effective_password_policy.ps1') }}"
+      register: lab_policy_drifted
+
+    - name: Check Default Domain Policy's settings now win
+      ansible.builtin.assert:
+        that:
+          - lab_policy_drifted.result.min_length == 7
+          - lab_policy_drifted.result.lockout_threshold == 0
+        fail_msg: "Effective policy after drift: {{ lab_policy_drifted.result }}"
+
+    - name: Plan the import against the drifted domain (report-only)
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_import
+      vars:
+        gpo_import_domain: "{{ lab_domain }}"
+        gpo_import_source_dir: "{{ lab_repo }}"
+        gpo_import_report_only: true
+        gpo_import_create_wmi_filters: true
+        gpo_import_remove_unmanaged_links: true
+
+    - name: Check the plan covers the drift
+      ansible.builtin.assert:
+        that:
+          - not gpo_import_run.changed
+          - gpo_import_run.result.report_only
+          - gpo_import_run.result.actions | select('search', "import GPO '" ~ lab_fixture.gpo_rdp ~ "'") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "create WMI filter") | list | length == 1
+          - gpo_import_run.result.actions | select('search', "remove unmanaged link") | list | length == 1
+        fail_msg: "Unexpected plan: {{ gpo_import_run.result | to_nice_json }}"
+
+    - name: Look for the deleted GPO after the report-only run
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Name)
+          $Ansible.Changed = $false
+          [bool](Get-GPO -All | Where-Object { $_.DisplayName -eq $Name })
+        parameters:
+          Name: "{{ lab_fixture.gpo_rdp }}"
+      register: lab_rdp_after_plan
+
+    - name: Check report-only touched nothing
+      ansible.builtin.assert:
+        that: not (lab_rdp_after_plan.output | first)
+        fail_msg: report-only mode recreated a GPO
+
+    # GPP cpassword is a decryptable secret; the import must refuse a backup
+    # that contains one, before touching the domain.
+    - name: Build a copy of the export with a cpassword planted in it
+      delegate_to: localhost
+      block:
+        - name: Copy the export
+          ansible.builtin.copy:
+            src: "{{ lab_repo }}/"
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/"
+            remote_src: true
+            mode: u=rwX,go=
+
+        - name: Plant a Groups.xml carrying cpassword
+          ansible.builtin.copy:
+            dest: "{{ lab_dir }}/gpo-repo-cpassword/gpos/{{ lab_fixture.gpo_baseline }}/Groups.xml"
+            content: '<Groups><User name="x"><Properties cpassword="example-not-secret"/></User></Groups>'
+            mode: "0600"
+
+    - name: Import the poisoned export
+      block:
+        - name: Run gpo_import on it
+          ansible.builtin.include_role:
+            name: git_cgallagher.gpo.gpo_import
+          vars:
+            gpo_import_domain: "{{ lab_domain }}"
+            gpo_import_source_dir: "{{ lab_dir }}/gpo-repo-cpassword"
+            gpo_import_report_only: true
+
+        - name: Fail — the import should have refused
+          ansible.builtin.fail:
+            msg: gpo_import accepted a backup containing cpassword
+      rescue:
+        - name: Check it refused because of cpassword
+          ansible.builtin.assert:
+            that: ansible_failed_result | to_json is search('Refusing to import')
+            fail_msg: "Failed for another reason: {{ ansible_failed_result | to_nice_json }}"

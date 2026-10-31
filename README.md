@@ -6,8 +6,9 @@ target domain (the same one, or a different/untrusted one via migration
 tables).
 
 > **Status: early (0.x).** Both roles are tested end to end against a real
-> Windows Server 2022 domain controller in CI (`molecule/domain_lab`), within
-> one domain. Importing into a *different* domain isn't lab-tested yet
+> Windows Server 2022 domain controller in CI, each by its own Molecule
+> scenario (`roles/<role>/molecule/default`), within one domain. Importing
+> into a *different* domain isn't lab-tested yet
 > ([issue #16](https://github.com/git-cgallagher/ansible-collection-gpo/issues/16)),
 > so try that in a lab of your own first. Known gaps are listed under
 > [What this doesn't do (yet)](#what-this-doesnt-do-yet).
@@ -111,7 +112,7 @@ real-world changes end to end: a domain password and lockout policy (and why
 it must sit above Default Domain Policy), local Administrators membership via
 Group Policy Preferences and via Restricted Groups, and promoting a GPO from
 lab to production with a migration table. All of them are exercised against
-a real domain controller by the `domain_lab` test.
+a real domain controller by `gpo_import`'s Molecule scenario.
 
 ## The manifest
 

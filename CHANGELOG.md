@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 — 2026-10-31
+
+Tests and packaging only; the roles are unchanged.
+
+- Each role now has its own Molecule scenario next to it.
+  `roles/gpo_backup/molecule/default` checks the export: the manifest, the
+  backup folders, that an unchanged domain ships nothing and that a changed
+  GPO ships alone. `roles/gpo_import/molecule/default` runs the import round
+  trip that was `molecule/domain_lab`. They share one lab, `tests/domain_lab/`,
+  and one Molecule base config, `.config/molecule/config.yml`.
+- CI's `domain-lab` workflow runs the two scenarios in parallel, one job per
+  role.
+- `roles/*/molecule` and `.config` are excluded from the collection tarball.
+
 ## 0.1.0 — 2026-10-28
 
 Initial release of `git_cgallagher.gpo`, tested end to end against a real

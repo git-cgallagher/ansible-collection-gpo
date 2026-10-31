@@ -1,0 +1,19 @@
+---
+# Shared by every role's prepare.yml (ansible.builtin.import_playbook), after
+# promote.yml. The fixture's names are lab_fixture in .config/molecule/config.yml.
+- name: Seed the authored state
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Seed OUs, groups, a WMI filter and five GPOs with links and filtering
+      ansible.windows.win_powershell:
+        script: "{{ lookup('ansible.builtin.file', lab_tests_dir ~ '/files/lab_fixture.ps1') }}"
+        parameters:
+          Action: Seed
+          Domain: "{{ lab_domain }}"
+          FixtureJson: "{{ lab_fixture | to_json }}"
+      register: lab_seed
+
+    - name: Show the session's groups and whether AD Web Services may modify a GPO object
+      ansible.builtin.debug:
+        var: lab_seed.result.diagnostics

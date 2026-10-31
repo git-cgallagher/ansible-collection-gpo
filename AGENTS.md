@@ -17,13 +17,22 @@ precedence, filtering, WMI filters and status. Problem statement + decisions:
 
 ## ⚠️ Maturity — read before relying on it
 
-**Lab-tested within one domain.** The `domain_lab` Molecule scenario
-(`molecule/domain_lab/`, the `domain-lab` workflow) boots a real Windows
-Server 2022 VM under KVM, promotes it to a DC and runs both roles against
-it: seed, export, out-of-band drift, report-only plan, import, verify,
-re-export round trip, and an import through a migration table. It first
-passed on 2026-10-28 (PR #1, the initial collection), which closed the
-lab-validation issue (#2). It can't run on macOS. Other CI:
+**Lab-tested within one domain.** Each role has its own Molecule scenario
+next to it. Each boots a real Windows Server 2022 VM under KVM, promotes it
+to a DC and runs its role against it (the `domain-lab` workflow, one job per
+role):
+
+- `roles/gpo_backup/molecule/default`: the export, its manifest and backup
+  folders, an unchanged domain shipping nothing and a changed GPO shipping
+  alone.
+- `roles/gpo_import/molecule/default`: seed, export, out-of-band drift,
+  report-only plan, import, verify, re-export round trip, and an import
+  through a migration table.
+
+Both share the lab in `tests/domain_lab/` and the Molecule base config
+`.config/molecule/config.yml` (see Conventions). The lab first passed on
+2026-10-28 (PR #1, the initial collection), which closed the lab-validation
+issue (#2); the per-role layout came in 0.1.1. It can't run on macOS. Other CI:
 ansible-lint/yamllint, ansible-test sanity (including pslint), PowerShell
 parse + PSScriptAnalyzer, a `cpassword` grep, and the `argument-specs`
 workflow. Known gaps found by review are tracked as repo issues and listed
@@ -42,9 +51,10 @@ Not covered by the lab yet (issue #16 unless noted):
 
 `domain-lab` is deliberately not a required check: it's path-filtered (a
 required check that never starts blocks merges forever) and depends on a
-third-party box download. Promote it after four consecutive green weekly
-runs, and replace the path filter with a job that always reports and skips
-the lab when nothing relevant changed.
+third-party box download. Promote its two jobs, `molecule (gpo_backup)` and
+`molecule (gpo_import)`, after four consecutive green weekly runs, and
+replace the path filter with a job that always reports and skips the lab
+when nothing relevant changed.
 
 When the lab disagrees with the scripts, fix the scripts — don't bend the
 lab to the scripts — and record the surprise below as a gotcha.
@@ -72,6 +82,16 @@ lab to the scripts — and record the surprise below as a gotcha.
   equal its `defaults/main.yml` value. The `argument-specs` workflow
   (`tests/argument_specs/`) enforces both. Add or change a variable in the
   spec, defaults, README table and tasks together.
+- **Molecule scenarios live with their role**, in
+  `roles/<role>/molecule/<scenario>/`, never at the collection root. What
+  every scenario shares goes in `.config/molecule/config.yml` (Molecule's
+  base config: box pin, provisioner, inventory, `lab_fixture`, test
+  sequence) or in `tests/domain_lab/` (VM lifecycle, promotion, seeding, the
+  fixture script); a scenario's `molecule.yml` holds only what differs.
+  Playbooks reach the shared fixture through `lab_tests_dir`, and a
+  scenario's own `files/` through `playbook_dir`. `roles/*/molecule` and
+  `.config` are in `galaxy.yml`'s `build_ignore` and in the version-bump
+  gate's ignore list, like `tests/`.
 - Release flow mirrors `ansible-collection-isc`: every merge that changes
   shipped files must bump `galaxy.yml` + add a `CHANGELOG.md` entry
   (CI-enforced). `release.yml` is **workflow_dispatch-only** until
@@ -99,6 +119,13 @@ ansible-galaxy collection build --force --output-path /tmp/dist
 ansible-galaxy collection install /tmp/dist/git_cgallagher-gpo-*.tar.gz -p /tmp/colls --force
 ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-doc -t role git_cgallagher.gpo.gpo_import
 ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook tests/argument_specs/validate.yml
+
+# a role's Molecule scenario: Linux with /dev/kvm only, one at a time, from
+# the role's directory (setup in tests/domain_lab/README.md)
+cd roles/gpo_import && molecule test
+# on a Mac, from a role's directory: config and syntax (`molecule create`
+# runs up to the /dev/kvm check)
+cd roles/gpo_backup && molecule list && molecule syntax
 
 # build the tarball
 ansible-galaxy collection build --force
@@ -128,7 +155,8 @@ ansible-galaxy collection build --force
   the SYSVOL share and `SysvolReady`. Group Policy Preferences cmdlets write
   through the domain's DFS path, which failed with "The network path was not
   found" in one lab run 6 seconds after the other checks passed.
-  `prepare.yml` polls `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
+  `tests/domain_lab/promote.yml` polls
+  `Test-Path \\<domain>\SYSVOL\<domain>\Policies`.
 - **The effective domain password policy** follows link order at the domain
   root after `gpupdate /target:computer /force` on the PDC (the first refresh
   after promotion took about 90 seconds in the lab).
@@ -143,6 +171,24 @@ ansible-galaxy collection build --force
   diff, not the pushed commit.** Once a PR touches `roles/**` or
   `molecule/**`, every push to it re-runs the 14-minute lab, docs-only
   pushes included (PR #1's last docs commit did). Batch the doc edits.
+- **Molecule's base config is implicit.** `.config/molecule/config.yml` at
+  the repository root is merged under every scenario's `molecule.yml`
+  because `--base-config` defaults to it (Molecule logs "Found config
+  file"), so a role's `molecule.yml` holds almost nothing. Look there before
+  concluding a scenario has no platform or inventory.
+- **Run Molecule from the role's directory**, not with `-s` from the
+  repository root. Molecule finds scenarios under the working directory, and
+  ansible-compat's prerun recognizes a role inside a collection only by the
+  working directory (`roles/<name>` with `../../galaxy.yml`): from there it
+  installs the collection from disk instead of treating the role as a
+  standalone one and checking its name. CI sets `working-directory`.
+- **ansible-lint treats a role's Molecule playbooks as role code.**
+  `var-naming[no-role-prefix]` wants every `register:` under
+  `roles/<role>/molecule/` named with the role's prefix (10 findings when
+  the scenarios moved there in 0.1.1). Those files are listed in
+  `.ansible-lint-ignore` with `skip`: add a line when another scenario file
+  starts registering results, rather than renaming test results into the
+  role's namespace or skipping the rule for the roles themselves.
 - `Import-GPO` **replaces the whole GPO** and bumps its version (clients
   reprocess). That's why both roles hash content and keep state files
   (`C:\ProgramData\gpo-iac\*-state-<domain>.json` on the management host) —

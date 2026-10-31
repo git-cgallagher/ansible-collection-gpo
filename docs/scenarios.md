@@ -1,10 +1,11 @@
 # Real-world scenarios
 
 Worked examples of common Group Policy changes managed with this collection.
-Each one is part of the `domain_lab` test (`molecule/domain_lab`), which
-builds it on a real Windows Server 2022 domain controller in CI, exports it,
-breaks it the way it breaks in real life, and checks `gpo_import` puts it back.
-The fixture that builds them is `molecule/domain_lab/files/lab_fixture.ps1`.
+Each one is part of `gpo_import`'s Molecule scenario
+(`roles/gpo_import/molecule/default`), which builds it on a real Windows
+Server 2022 domain controller in CI, exports it, breaks it the way it breaks
+in real life, and checks `gpo_import` puts it back. The fixture that builds
+them is `tests/domain_lab/files/lab_fixture.ps1`.
 
 The workflow is the same every time: **edit the GPO in GPMC in your authoring
 (lab) domain → run `gpo_backup` → review the diff and merge → run `gpo_import`
@@ -129,7 +130,7 @@ the import:
 **Building the table:** let GPMC write it so the format and source names are
 exactly what `Import-GPO` expects. Use the Migration Table Editor
 (`mtedit.exe`, "Populate from Backup"), or script it with the GPMC COM API,
-as the lab does (`molecule/domain_lab/files/new_migtable.ps1`):
+as the lab does (`roles/gpo_import/molecule/default/files/new_migtable.ps1`):
 
 ```powershell
 $gpm = New-Object -ComObject GPMgmt.GPM
