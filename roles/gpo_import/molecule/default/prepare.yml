@@ -40,7 +40,7 @@
     # knows it (a re-run of prepare on the same VM).
     - name: Export the authored state
       ansible.builtin.include_role:
-        name: git_cgallagher.gpo.gpo_backup
+        name: git_cgallagher.windows.gpo_backup
       vars:
         gpo_backup_domain: "{{ lab_domain }}"
         gpo_backup_repo_dir: "{{ lab_repo }}"
@@ -77,7 +77,7 @@
 
     - name: Plan the import against the drifted domain (report-only)
       ansible.builtin.include_role:
-        name: git_cgallagher.gpo.gpo_import
+        name: git_cgallagher.windows.gpo_import
       vars:
         gpo_import_domain: "{{ lab_domain }}"
         gpo_import_source_dir: "{{ lab_repo }}"
@@ -132,7 +132,7 @@
       block:
         - name: Run gpo_import on it
           ansible.builtin.include_role:
-            name: git_cgallagher.gpo.gpo_import
+            name: git_cgallagher.windows.gpo_import
           vars:
             gpo_import_domain: "{{ lab_domain }}"
             gpo_import_source_dir: "{{ lab_dir }}/gpo-repo-cpassword"

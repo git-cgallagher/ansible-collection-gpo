@@ -1,4 +1,4 @@
-# import_gpos.ps1 — converge a domain on a git_cgallagher.gpo export.
+# import_gpos.ps1 — converge a domain on a git_cgallagher.windows export.
 #
 # Runs on a Windows management host with RSAT (GroupPolicy + ActiveDirectory
 # modules) in the TARGET domain. Invoked by roles/gpo_import via
@@ -338,7 +338,7 @@ foreach ($name in ($manifestFilters.Keys | Sort-Object)) {
             'msWMI-Parm1' = $desc
             'msWMI-Parm2' = (ConvertTo-WmiFilterParm2 -Namespace $ns -Query ([string]$def.query))
             'msWMI-ID' = $id
-            'msWMI-Author' = 'git_cgallagher.gpo'
+            'msWMI-Author' = 'git_cgallagher.windows'
             'msWMI-ChangeDate' = $now
             'msWMI-CreationDate' = $now
         } | Out-Null

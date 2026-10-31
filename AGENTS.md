@@ -1,19 +1,27 @@
-# AGENTS.md — ansible-collection-gpo
+# AGENTS.md — ansible-collection-windows
 
 > Read `~/Code/AGENTS.md` first (workspace-wide rules). This file covers only
 > this repo.
 
 ## What this is
 
-Public Ansible collection **`git_cgallagher.gpo`** (MIT): Windows Group
-Policy as code via `Backup-GPO`/`Import-GPO` plus a JSON manifest for links,
-precedence, filtering, WMI filters and status. Problem statement + decisions:
-`docs/design.md`. Two roles:
+Public Ansible collection **`git_cgallagher.windows`** (MIT): Windows Server
+automation, grouped by area. Until 0.2.0 (2026-10-31) it was
+`git_cgallagher.gpo`, in the repository `ansible-collection-gpo`. GitHub
+redirects the old URLs and the old name was never on Galaxy, so issues,
+commits and notes that say "gpo" mean this collection.
+
+Its one area so far is **Group Policy as code**: `Backup-GPO`/`Import-GPO`
+plus a JSON manifest for links, precedence, filtering, WMI filters and
+status. Problem statement + decisions: `docs/design.md`. Two roles:
 
 - `roles/gpo_backup` — export GPOs + manifest from a domain into a Git
   working copy (zip over WinRM, content-hash state so only changes ship).
 - `roles/gpo_import` — converge a target domain on the repo (import +
   reconcile topology; migration-table aware; report-only mode).
+
+A new area joins as roles (or plugins) named with that area's prefix, the
+way `gpo_*` is, each role with its own Molecule scenario.
 
 ## ⚠️ Maturity — read before relying on it
 
@@ -88,6 +96,9 @@ lab to the scripts — and record the surprise below as a gotcha.
   base config: box pin, provisioner, inventory, `lab_fixture`, test
   sequence) or in `tests/domain_lab/` (VM lifecycle, promotion, seeding, the
   fixture script); a scenario's `molecule.yml` holds only what differs.
+  The shared platform is a Windows Server 2022 domain controller; a role
+  that needs another machine (a member server, no domain) overrides
+  `platforms` and `provisioner.playbooks` in its own `molecule.yml`.
   Playbooks reach the shared fixture through `lab_tests_dir`, and a
   scenario's own `files/` through `playbook_dir`. `roles/*/molecule` and
   `.config` are in `galaxy.yml`'s `build_ignore` and in the version-bump
@@ -116,8 +127,8 @@ pwsh -c "Invoke-ScriptAnalyzer -Path roles -Recurse -Settings '$S'"
 # argument specs (what the argument-specs workflow runs): build + install the
 # collection, render the role docs, check specs vs defaults and validation
 ansible-galaxy collection build --force --output-path /tmp/dist
-ansible-galaxy collection install /tmp/dist/git_cgallagher-gpo-*.tar.gz -p /tmp/colls --force
-ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-doc -t role git_cgallagher.gpo.gpo_import
+ansible-galaxy collection install /tmp/dist/git_cgallagher-windows-*.tar.gz -p /tmp/colls --force
+ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-doc -t role git_cgallagher.windows.gpo_import
 ANSIBLE_COLLECTIONS_PATH=/tmp/colls:~/.ansible/collections ansible-playbook tests/argument_specs/validate.yml
 
 # a role's Molecule scenario: Linux with /dev/kvm only, one at a time, from

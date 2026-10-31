@@ -53,7 +53,7 @@
       block:
         - name: Include gpo_backup without gpo_backup_domain
           ansible.builtin.include_role:
-            name: git_cgallagher.gpo.gpo_backup
+            name: git_cgallagher.windows.gpo_backup
           vars:
             gpo_backup_repo_dir: /srv/gpo-repo
 
@@ -70,7 +70,7 @@
       block:
         - name: Include gpo_import with gpo_import_report_only=maybe
           ansible.builtin.include_role:
-            name: git_cgallagher.gpo.gpo_import
+            name: git_cgallagher.windows.gpo_import
           vars:
             gpo_import_domain: prod.example.com
             gpo_import_source_dir: /srv/gpo-repo
@@ -89,7 +89,7 @@
       block:
         - name: Include gpo_import with a mapping for gpo_import_gpos
           ansible.builtin.include_role:
-            name: git_cgallagher.gpo.gpo_import
+            name: git_cgallagher.windows.gpo_import
           vars:
             gpo_import_domain: prod.example.com
             gpo_import_source_dir: /srv/gpo-repo
@@ -110,7 +110,7 @@
       block:
         - name: Include gpo_import with an empty domain
           ansible.builtin.include_role:
-            name: git_cgallagher.gpo.gpo_import
+            name: git_cgallagher.windows.gpo_import
           vars:
             gpo_import_domain: ''
             gpo_import_source_dir: /srv/gpo-repo

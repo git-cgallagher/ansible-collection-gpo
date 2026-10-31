@@ -3,7 +3,7 @@ argument_specs:
   main:
     short_description: Converge a domain on exported GPOs, links, precedence and filtering
     description:
-      - Copies an export made by M(git_cgallagher.gpo.gpo_backup) to a Windows management host with RSAT and runs
+      - Copies an export made by M(git_cgallagher.windows.gpo_backup) to a Windows management host with RSAT and runs
         C(Import-GPO -CreateIfNeeded) for every GPO whose backup content changed since this role last imported it
         (or that is missing), optionally through a migration table for another domain.
       - Then reconciles what an import never carries, from C(gpo-manifest.json). That covers GPO status, WMI filter

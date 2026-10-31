@@ -1,4 +1,4 @@
-# backup_gpos.ps1 — export a domain's GPOs + topology manifest for git_cgallagher.gpo.
+# backup_gpos.ps1 — export a domain's GPOs + topology manifest for git_cgallagher.windows.
 #
 # Runs on a Windows management host with RSAT (GroupPolicy + ActiveDirectory modules).
 # Invoked by roles/gpo_backup via ansible.windows.win_powershell, but also runnable
@@ -248,7 +248,7 @@ foreach ($gpo in $live) {
         $rawDir = Join-Path $rawRoot $safe
         New-Item -ItemType Directory -Path $rawDir -Force | Out-Null
         Backup-GPO -Guid $gpo.Id -Domain $Domain -Server $pdc -Path $rawDir `
-            -Comment 'git_cgallagher.gpo export' | Out-Null
+            -Comment 'git_cgallagher.windows export' | Out-Null
         $hash = Get-DirContentHash -Path (Get-GpoSysvolPath -BackupDir $rawDir)
     }
     catch {

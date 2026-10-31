@@ -120,7 +120,7 @@ where the equivalent group is `PROD\GG-Workstation-Admins` (a different SID).
 the import:
 
 ```yaml
-- role: git_cgallagher.gpo.gpo_import
+- role: git_cgallagher.windows.gpo_import
   vars:
     gpo_import_domain: prod.example.com
     gpo_import_source_dir: "{{ playbook_dir }}/gpo-repo"
