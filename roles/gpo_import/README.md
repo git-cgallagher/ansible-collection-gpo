@@ -1,4 +1,4 @@
-# git_cgallagher.gpo.gpo_import
+# git_cgallagher.windows.gpo_import
 
 Converges a target domain on a `gpo_backup` export: `Import-GPO
 -CreateIfNeeded` (optionally through a migration table for cross-domain
@@ -22,10 +22,10 @@ GPOs, OU `gPLink`/`gPOptions` and (optionally) `msWMI-Som` objects.
 
 All variables are documented in
 [meta/argument_specs.yml](meta/argument_specs.yml), which Ansible also uses to
-validate them (`ansible-doc -t role git_cgallagher.gpo.gpo_import`); the
+validate them (`ansible-doc -t role git_cgallagher.windows.gpo_import`); the
 workflow, manifest format and cross-domain story are in the
 [collection README](../../README.md) and [docs/design.md](../../docs/design.md).
 
 Its Molecule scenario,
-[`molecule/default`](https://github.com/git-cgallagher/ansible-collection-gpo/tree/main/roles/gpo_import/molecule/default),
+[`molecule/default`](https://github.com/git-cgallagher/ansible-collection-windows/tree/main/roles/gpo_import/molecule/default),
 tests the import end to end against a real domain controller.

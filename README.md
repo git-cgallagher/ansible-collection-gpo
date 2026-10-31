@@ -1,19 +1,31 @@
-# git_cgallagher.gpo — Windows Group Policy as code
+# git_cgallagher.windows — Ansible for Windows Server
+
+An Ansible collection for running Windows Server as code, grouped by area.
+Each area's roles carry its prefix.
+
+| Area | Roles | What they do |
+|---|---|---|
+| [Group Policy](#group-policy-as-code) | `gpo_backup`, `gpo_import` | Export a domain's GPOs, with their links, precedence, filtering and WMI filters, into Git, and import them into the same domain or a different one |
+
+> **Status: early (0.x).** Every role is tested end to end against a real
+> Windows Server 2022 domain controller in CI, each by its own Molecule
+> scenario (`roles/<role>/molecule/default`), within one domain. Importing
+> GPOs into a *different* domain isn't lab-tested yet
+> ([issue #16](https://github.com/git-cgallagher/ansible-collection-windows/issues/16)),
+> so try that in a lab of your own first. Known gaps are listed under
+> [What this doesn't do (yet)](#what-this-doesnt-do-yet).
+>
+> Until 0.2.0 this collection was `git_cgallagher.gpo`, in the repository
+> `ansible-collection-gpo`. It was never published under that name.
+
+## Group Policy as code
 
 Export a domain's GPOs — **and** their links, precedence, filtering and WMI
 filters — into Git, review changes as pull requests, and import them into a
 target domain (the same one, or a different/untrusted one via migration
 tables).
 
-> **Status: early (0.x).** Both roles are tested end to end against a real
-> Windows Server 2022 domain controller in CI, each by its own Molecule
-> scenario (`roles/<role>/molecule/default`), within one domain. Importing
-> into a *different* domain isn't lab-tested yet
-> ([issue #16](https://github.com/git-cgallagher/ansible-collection-gpo/issues/16)),
-> so try that in a lab of your own first. Known gaps are listed under
-> [What this doesn't do (yet)](#what-this-doesnt-do-yet).
-
-## The problem
+### The problem
 
 Domain Group Policy resists infrastructure-as-code because a GPO is not one
 format. Each setting category is a different client-side extension with its
@@ -35,14 +47,14 @@ is the one that never parses settings at all: `Backup-GPO` / `Import-GPO`,
 which copy the GPO's files verbatim. That's how Microsoft distributes its own
 security baselines.
 
-This collection operationalizes that: **GPMC is the editor, Git is the store,
+The `gpo_*` roles operationalize that: **GPMC is the editor, Git is the store,
 `Import-GPO` is the deployer** — plus a JSON manifest for everything an
 import doesn't carry (links, order, enforcement, block-inheritance, security
 filtering, WMI filters, GPO status). The full analysis, including the
 cross-domain story and what was rejected, is in
 [docs/design.md](docs/design.md).
 
-## How it works
+### How it works
 
 ```
    lab / authoring domain                      Git                       target domain(s)
@@ -70,7 +82,7 @@ cross-domain story and what was rejected, is in
   then GPO status, WMI filter links, security filtering, and each
   container's whole ordered link list.
 
-## Requirements
+### Requirements
 
 - A Windows management host (or DC) in each domain, reachable over
   WinRM/PSRP, with the **GroupPolicy** and **ActiveDirectory** PowerShell
@@ -80,14 +92,14 @@ cross-domain story and what was rejected, is in
 - Controller: `ansible.windows` collection; `unzip` available for
   `ansible.builtin.unarchive`.
 
-## Quickstart
+### Quickstart
 
 Backup (authoring domain → repo working copy):
 
 ```yaml
 - hosts: mgmt_lab
   roles:
-    - role: git_cgallagher.gpo.gpo_backup
+    - role: git_cgallagher.windows.gpo_backup
       vars:
         gpo_backup_domain: lab.example.com
         gpo_backup_repo_dir: "{{ playbook_dir }}/gpo-repo"   # controller path
@@ -98,7 +110,7 @@ Review `git diff`, commit, merge. Then import (repo → target domain):
 ```yaml
 - hosts: mgmt_prod
   roles:
-    - role: git_cgallagher.gpo.gpo_import
+    - role: git_cgallagher.windows.gpo_import
       vars:
         gpo_import_domain: prod.example.com
         gpo_import_source_dir: "{{ playbook_dir }}/gpo-repo"
@@ -114,7 +126,7 @@ Group Policy Preferences and via Restricted Groups, and promoting a GPO from
 lab to production with a migration table. All of them are exercised against
 a real domain controller by `gpo_import`'s Molecule scenario.
 
-## The manifest
+### The manifest
 
 `gpo_backup` regenerates `gpo-manifest.json` on every run; `gpo_import`
 treats it as the desired state. Shape:
@@ -177,12 +189,12 @@ Conventions worth knowing:
   never none: a GPO unreadable by Authenticated Users / Domain Computers
   breaks processing entirely (MS16-072).
 
-## Role variables
+### Role variables
 
 The main ones. Each role declares every variable in
 `meta/argument_specs.yml`, so Ansible checks types and required variables
 before the role's first task, and
-`ansible-doc -t role git_cgallagher.gpo.gpo_import` (or `gpo_backup`) prints
+`ansible-doc -t role git_cgallagher.windows.gpo_import` (or `gpo_backup`) prints
 the full reference. CI checks that the specs agree with `defaults/main.yml`
 and that bad input is rejected.
 
@@ -201,7 +213,7 @@ and that bad input is rejected.
 | `gpo_import_create_wmi_filters` | `false` | Create missing WMI filters from the manifest |
 | `gpo_import_force` | `false` | Re-import every GPO regardless of state |
 
-## What this doesn't do (yet)
+### What this doesn't do (yet)
 
 Known gaps, each tracked as a repository issue:
 

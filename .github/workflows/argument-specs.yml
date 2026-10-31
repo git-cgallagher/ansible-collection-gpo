@@ -34,16 +34,16 @@ jobs:
       - name: Build and install the collection
         run: |
           ansible-galaxy collection build --force --output-path "$RUNNER_TEMP/dist"
-          ansible-galaxy collection install "$RUNNER_TEMP"/dist/git_cgallagher-gpo-*.tar.gz -p "$RUNNER_TEMP/collections"
+          ansible-galaxy collection install "$RUNNER_TEMP"/dist/git_cgallagher-windows-*.tar.gz -p "$RUNNER_TEMP/collections"
 
       - name: Render each role's documentation from its spec
         env:
           ANSIBLE_COLLECTIONS_PATH: ${{ runner.temp }}/collections
         run: |
-          ansible-doc -t role -l git_cgallagher.gpo
+          ansible-doc -t role -l git_cgallagher.windows
           for role in gpo_backup gpo_import; do
-            ansible-doc -t role "git_cgallagher.gpo.$role" > /dev/null
-            echo "ok: git_cgallagher.gpo.$role"
+            ansible-doc -t role "git_cgallagher.windows.$role" > /dev/null
+            echo "ok: git_cgallagher.windows.$role"
           done
 
       - name: Check specs against defaults and exercise validation

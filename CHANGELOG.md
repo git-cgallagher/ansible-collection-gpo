@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 — 2026-10-31
+
+Renamed to `git_cgallagher.windows`, to grow into a collection for Windows
+Server automation beyond Group Policy. The repository is now
+`git-cgallagher/ansible-collection-windows`; GitHub redirects the old
+`ansible-collection-gpo` URLs.
+
+- The roles keep their names and variables. Update the FQCNs in your
+  playbooks: `git_cgallagher.gpo.gpo_backup` is now
+  `git_cgallagher.windows.gpo_backup`, and `git_cgallagher.gpo.gpo_import` is
+  now `git_cgallagher.windows.gpo_import`. `git_cgallagher.gpo` was never
+  published to Galaxy.
+- Backups now carry the comment `git_cgallagher.windows export`, and WMI
+  filters that `gpo_import` creates record `git_cgallagher.windows` as their
+  author.
+
 ## 0.1.1 — 2026-10-31
 
 Tests and packaging only; the roles are unchanged.

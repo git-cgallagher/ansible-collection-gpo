@@ -60,7 +60,7 @@ virtualization.
 pip install ansible-core molecule pypsrp
 ansible-galaxy collection install -r tests/domain_lab/requirements.yml
 mkdir -p .molecule-collections/ansible_collections/git_cgallagher
-ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/gpo
+ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows
 cd roles/gpo_import    # or roles/gpo_backup
 GPO_LAB_DIR=/path/with/space molecule test
 ```

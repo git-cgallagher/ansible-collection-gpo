@@ -32,7 +32,7 @@ platforms:
 provisioner:
   name: ansible
   env:
-    # .molecule-collections exposes the checkout as git_cgallagher.gpo (the
+    # .molecule-collections exposes the checkout as git_cgallagher.windows (the
     # workflow and tests/domain_lab/README.md create the symlink).
     ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../.molecule-collections:${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections
   # Booting and tearing down the VM is the same for every role; prepare,

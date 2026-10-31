@@ -90,10 +90,10 @@ jobs:
           pip install ansible-core molecule pypsrp
           ansible-galaxy collection install -r tests/domain_lab/requirements.yml
 
-      - name: Expose the checkout as git_cgallagher.gpo
+      - name: Expose the checkout as git_cgallagher.windows
         run: |
           mkdir -p .molecule-collections/ansible_collections/git_cgallagher
-          ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/gpo
+          ln -sfn ../../.. .molecule-collections/ansible_collections/git_cgallagher/windows
 
       # From the role's directory: that's where Molecule finds the scenario,
       # and how its prerun recognizes a role inside a collection.

@@ -8,7 +8,7 @@
   tasks:
     - name: Run gpo_backup
       ansible.builtin.include_role:
-        name: git_cgallagher.gpo.gpo_backup
+        name: git_cgallagher.windows.gpo_backup
       vars:
         gpo_backup_domain: "{{ lab_domain }}"
         gpo_backup_repo_dir: "{{ lab_dir }}/gpo-repo"

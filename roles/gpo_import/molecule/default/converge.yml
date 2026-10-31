@@ -7,7 +7,7 @@
   tasks:
     - name: Run gpo_import
       ansible.builtin.include_role:
-        name: git_cgallagher.gpo.gpo_import
+        name: git_cgallagher.windows.gpo_import
       vars:
         gpo_import_domain: "{{ lab_domain }}"
         gpo_import_source_dir: "{{ lab_dir }}/gpo-repo"
