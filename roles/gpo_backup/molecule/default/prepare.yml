@@ -1,0 +1,24 @@
+---
+- name: Promote the VM to the first DC of a new forest
+  ansible.builtin.import_playbook: ../../../../tests/domain_lab/promote.yml
+
+- name: Seed the authored state
+  ansible.builtin.import_playbook: ../../../../tests/domain_lab/seed.yml
+
+# converge.yml exports into an empty repo. A re-run of prepare on the same VM
+# (molecule prepare --force) has to reset the host's backup state too, or the
+# export would find everything already shipped and ship nothing.
+- name: Start the export from scratch
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Remove the backup state file (the default gpo_backup_workdir)
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\gpo-iac\backup\backup-state-{{ lab_domain }}.json'
+        state: absent
+
+    - name: Remove the previous export
+      ansible.builtin.file:
+        path: "{{ lab_dir }}/gpo-repo"
+        state: absent
+      delegate_to: localhost

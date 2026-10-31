@@ -1,11 +1,18 @@
 ---
-# One Windows Server 2022 VM (QEMU/KVM) promoted to the first DC of a new
-# forest; gpo_backup and gpo_import then run against it for real. Needs a
-# Linux host with /dev/kvm and ~20 GB free in $GPO_LAB_DIR — see README.md.
+# Molecule base config for every role's scenario (roles/*/molecule/*/).
+# Molecule merges it under each scenario's molecule.yml (--base-config defaults
+# to .config/molecule/config.yml at the repository root), so the box pin and
+# the fixture live here once; a scenario's molecule.yml holds only what
+# differs.
+#
+# Each scenario boots one Windows Server 2022 VM (QEMU/KVM), promotes it to the
+# first DC of a new forest and runs its role against it for real. Needs a
+# Linux host with /dev/kvm and ~20 GB free in $GPO_LAB_DIR, and Molecule run
+# from the role's directory. See tests/domain_lab/README.md.
 dependency:
   name: galaxy
   options:
-    requirements-file: ${MOLECULE_SCENARIO_DIRECTORY}/requirements.yml
+    requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/domain_lab/requirements.yml
 driver:
   name: default
   options:
@@ -25,7 +32,14 @@ platforms:
 provisioner:
   name: ansible
   env:
-    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/.molecule-collections:${MOLECULE_PROJECT_DIRECTORY}/collections:~/.ansible/collections
+    # .molecule-collections exposes the checkout as git_cgallagher.gpo (the
+    # workflow and tests/domain_lab/README.md create the symlink).
+    ANSIBLE_COLLECTIONS_PATH: ${MOLECULE_PROJECT_DIRECTORY}/../../.molecule-collections:${MOLECULE_PROJECT_DIRECTORY}/../../collections:~/.ansible/collections
+  # Booting and tearing down the VM is the same for every role; prepare,
+  # converge and verify are each scenario's own.
+  playbooks:
+    create: ../../../../tests/domain_lab/create.yml
+    destroy: ../../../../tests/domain_lab/destroy.yml
   inventory:
     host_vars:
       dc01:
@@ -34,6 +48,8 @@ provisioner:
         ansible_psrp_reconnection_retries: 3
     group_vars:
       all:
+        # The shared lab: its playbooks and files/lab_fixture.ps1.
+        lab_tests_dir: ${MOLECULE_PROJECT_DIRECTORY}/../../tests/domain_lab
         # Box cache, VM disk, pidfile, monitor socket and the exported GPO
         # repos all live here (CI points it at the runner's large /mnt disk).
         lab_dir: "{{ lookup('ansible.builtin.env', 'GPO_LAB_DIR') | default(lookup('ansible.builtin.env', 'HOME') ~ '/.cache/gpo-domain-lab', true) }}"
@@ -42,8 +58,8 @@ provisioner:
         lab_root_dn: "{{ lab_domain.split('.') | map('regex_replace', '^', 'DC=') | join(',') }}"
         # Throwaway VM reachable only on the runner's loopback.
         lab_dsrm_password: Example-not-secret-1
-        # The authored state files/lab_fixture.ps1 seeds and assert_domain.ps1
-        # checks (passed to both as JSON, and used by the YAML assertions).
+        # The authored state files/lab_fixture.ps1 seeds and the scenarios check
+        # (passed to the scripts as JSON, and used by the YAML assertions).
         lab_fixture:
           ou: IacLab
           group: GG-IacLab-Servers                     # security filtering target

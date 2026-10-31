@@ -1,0 +1,8 @@
+---
+# gpo_import's scenario: seed a real domain, export it with gpo_backup, drift
+# it out-of-band, then converge it back from the export (see README.md).
+# The platform, provisioner, inventory and the shared create/destroy playbooks
+# come from the repository's Molecule base config, .config/molecule/config.yml,
+# which Molecule merges under this file.
+scenario:
+  name: default

@@ -1,0 +1,87 @@
+---
+- name: Verify the export against the seeded domain
+  hosts: all
+  gather_facts: false
+  vars:
+    lab_repo: "{{ lab_dir }}/gpo-repo"
+    # Manifest link targets are relative to the domain root ('' = the root).
+    lab_ou_rel: "OU={{ lab_fixture.ou }}"
+  tasks:
+    # 1. What converge exported, against the fixture.
+    - name: Check the manifest captured links, precedence, filtering, WMI filter and status
+      ansible.builtin.assert:
+        that:
+          - lab_m.domain == lab_domain
+          - lab_m.root_dn == lab_root_dn
+          - lab_m.domain_sid is match('^S-1-5-21-')
+          - lab_m.gpos[lab_fixture.gpo_baseline].denied == []
+          - lab_m.gpos[lab_fixture.gpo_baseline].status == 'AllSettingsEnabled'
+          - lab_m.gpos[lab_fixture.gpo_baseline].wmi_filter == lab_fixture.wmi_filter
+          - "lab_m.gpos[lab_fixture.gpo_baseline].apply_to == [{'name': lab_fixture.group, 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_rdp].status == 'UserSettingsDisabled'
+          - "lab_m.gpos[lab_fixture.gpo_rdp].apply_to == [{'name': 'Authenticated Users', 'type': 'Group'}]"
+          - lab_m.gpos[lab_fixture.gpo_password].status == 'AllSettingsEnabled'
+          - lab_fixture.gpo_server_admins in lab_m.gpos
+          - lab_fixture.gpo_ws_admins in lab_m.gpos
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].namespace == lab_fixture.wmi_namespace
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].query == lab_fixture.wmi_query
+          - lab_m.wmi_filters[lab_fixture.wmi_filter].description == lab_fixture.wmi_description
+          - "lab_root.links == [{'gpo': lab_fixture.gpo_password, 'enforced': false, 'enabled': true},
+                                {'gpo': 'Default Domain Policy', 'enforced': false, 'enabled': true}]"
+          - "lab_servers.links == [{'gpo': lab_fixture.gpo_baseline, 'enforced': true, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': true},
+                                   {'gpo': lab_fixture.gpo_server_admins, 'enforced': false, 'enabled': true}]"
+          - not lab_servers.block_inheritance
+          - "lab_workstations.links == [{'gpo': lab_fixture.gpo_rdp, 'enforced': false, 'enabled': false},
+                                        {'gpo': lab_fixture.gpo_ws_admins, 'enforced': false, 'enabled': true}]"
+          - lab_workstations.block_inheritance
+          # An OU with no links and no blocked inheritance isn't in the manifest.
+          - lab_m.soms | selectattr('target', 'equalto', lab_ou_rel) | list | length == 0
+        fail_msg: "Manifest doesn't match the fixture: {{ lab_m | to_nice_json }}"
+      vars:
+        lab_m: "{{ lookup('ansible.builtin.file', lab_repo ~ '/gpo-manifest.json') | from_json }}"
+        lab_root: "{{ lab_m.soms | selectattr('target', 'equalto', '') | first }}"
+        lab_servers: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Servers,' ~ lab_ou_rel) | first }}"
+        lab_workstations: "{{ lab_m.soms | selectattr('target', 'equalto', 'OU=Workstations,' ~ lab_ou_rel) | first }}"
+
+    - name: Check every fixture GPO was exported as a backup folder
+      ansible.builtin.stat:
+        path: "{{ lab_repo }}/gpos/{{ item }}/manifest.xml"
+      loop: "{{ [lab_fixture.gpo_baseline, lab_fixture.gpo_rdp, lab_fixture.gpo_password,
+                 lab_fixture.gpo_server_admins, lab_fixture.gpo_ws_admins] }}"
+      register: lab_backup_folders
+      failed_when: not lab_backup_folders.stat.exists
+      delegate_to: localhost
+
+    # 2. Positive change detection. The idempotence step showed an unchanged
+    #    domain ships nothing, which would also pass if hashing silently
+    #    returned ''. A real settings change has to ship that GPO, and only it.
+    - name: Change a setting in the RDP GPO through GPMC (a new value on every run)
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain, [string]$Name)
+          $pdc = (Get-ADDomain -Identity $Domain).PDCEmulator
+          $value = [int]((Get-Date).ToUniversalTime() - [datetime]'2026-01-01').TotalSeconds
+          Set-GPRegistryValue -Name $Name -Domain $Domain -Server $pdc `
+              -Key 'HKLM\Software\Policies\GpoIacLab' -ValueName 'BackupProbe' -Type DWord -Value $value | Out-Null
+          $Ansible.Result = $value
+        parameters:
+          Domain: "{{ lab_domain }}"
+          Name: "{{ lab_fixture.gpo_rdp }}"
+
+    - name: Export the changed domain
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_repo }}"
+
+    # A GPO's backup folder is named after the GPO, so a settings change
+    # leaves the manifest (topology) alone.
+    - name: Check the changed GPO, and only it, was exported
+      ansible.builtin.assert:
+        that:
+          - gpo_backup_export.changed
+          - gpo_backup_export.result.shipped | map(attribute='name') | list == [lab_fixture.gpo_rdp]
+          - not gpo_backup_export.result.manifest_changed
+        fail_msg: "Expected exactly {{ lab_fixture.gpo_rdp }} to ship: {{ gpo_backup_export.result | to_nice_json }}"

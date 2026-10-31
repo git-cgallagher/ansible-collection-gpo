@@ -1,0 +1,14 @@
+---
+# Export the seeded domain into an empty repo. Molecule's idempotence step
+# re-runs this and fails on any "changed": an unchanged domain must ship
+# nothing (and the fetch and unpack tasks are skipped).
+- name: Export the seeded domain with gpo_backup
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run gpo_backup
+      ansible.builtin.include_role:
+        name: git_cgallagher.gpo.gpo_backup
+      vars:
+        gpo_backup_domain: "{{ lab_domain }}"
+        gpo_backup_repo_dir: "{{ lab_dir }}/gpo-repo"

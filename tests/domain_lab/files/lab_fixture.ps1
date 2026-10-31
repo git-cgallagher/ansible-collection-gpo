@@ -1,4 +1,4 @@
-# lab_fixture.ps1 — test fixture for the domain_lab Molecule scenario.
+# lab_fixture.ps1 — test fixture shared by the roles' Molecule scenarios.
 #
 #   -Action Seed   the "authored" domain state that gpo_backup exports:
 #                  OUs, groups, a WMI filter and five GPOs covering four

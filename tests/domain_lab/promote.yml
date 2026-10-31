@@ -1,0 +1,117 @@
+---
+# Shared by every role's prepare.yml (ansible.builtin.import_playbook).
+#
+# The box's local accounts become domain accounts when it's promoted to the
+# first DC of a new forest, so the connection keeps working as `vagrant`
+# (PSRP + NTLM, which unlike Basic auth works for domain accounts).
+- name: Promote the VM to the first DC of a new forest
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for the connection
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Quiet the VM (Windows Update off, Defender real-time scanning off)
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          Stop-Service -Name wuauserv -Force -ErrorAction SilentlyContinue
+          Set-Service -Name wuauserv -StartupType Disabled -ErrorAction SilentlyContinue
+          try {
+              Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          }
+          catch {
+              $Ansible.Result = "Defender not changed: $($_.Exception.Message)"
+          }
+
+    - name: Point DNS at itself (the DC will host the domain's DNS)
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers: [127.0.0.1]
+
+    # GPMC + AD PowerShell up front so the post-reboot readiness check can use them.
+    - name: Install AD DS, GPMC and the AD PowerShell module
+      ansible.windows.win_feature:
+        name: [AD-Domain-Services, GPMC, RSAT-AD-PowerShell]
+        include_management_tools: true
+        state: present
+
+    - name: Create the forest
+      microsoft.ad.domain:
+        dns_domain_name: "{{ lab_domain }}"
+        domain_netbios_name: "{{ lab_netbios }}"
+        safe_mode_password: "{{ lab_dsrm_password }}"
+        reboot: false
+      register: lab_forest
+
+    # "Available" means ADWS answers (the AD module), SYSVOL is initialised
+    # and shared, and GPMC can enumerate GPOs — not merely "WinRM is up".
+    # Any error, terminating or not, must exit non-zero.
+    - name: Reboot and wait until AD, SYSVOL and Group Policy are available
+      ansible.windows.win_reboot:
+        reboot_timeout: 1800
+        test_command: >-
+          try {
+          Import-Module ActiveDirectory, GroupPolicy -ErrorAction Stop;
+          $null = Get-ADDomain -ErrorAction Stop;
+          $netlogon = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -ErrorAction Stop;
+          if ($netlogon.SysvolReady -ne 1) { exit 1 };
+          if (-not (Get-SmbShare -Name SYSVOL -ErrorAction SilentlyContinue)) { exit 1 };
+          $null = Get-GPO -All -ErrorAction Stop;
+          exit 0
+          } catch { exit 1 }
+      when: lab_forest.reboot_required | default(false)
+
+    # The share being up isn't enough: Group Policy Preferences (and other
+    # GPMC writes) go through the *domain's* DFS path, which needs the DFS
+    # referral service. Right after promotion that path can still fail with
+    # "The network path was not found" (it failed one CI run 6 s after the
+    # reboot check passed).
+    - name: Wait until the domain SYSVOL path (\\domain\SYSVOL) resolves
+      ansible.windows.win_powershell:
+        script: |
+          param([string]$Domain)
+          $Ansible.Changed = $false
+          if (-not (Test-Path -LiteralPath "\\$Domain\SYSVOL\$Domain\Policies")) {
+              throw "\\$Domain\SYSVOL\$Domain\Policies doesn't resolve yet"
+          }
+        parameters:
+          Domain: "{{ lab_domain }}"
+      register: lab_sysvol_path
+      until: lab_sysvol_path is succeeded
+      retries: 60
+      delay: 10
+
+    - name: Make the connection account a Domain Admin and GPO creator
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          foreach ($group in 'Domain Admins', 'Group Policy Creator Owners') {
+              $members = @(Get-ADGroupMember -Identity $group | ForEach-Object { $_.SamAccountName })
+              if ($members -notcontains $env:USERNAME) {
+                  Add-ADGroupMember -Identity $group -Members $env:USERNAME
+                  $Ansible.Changed = $true
+              }
+          }
+
+    # The PSRP session's logon token predates the membership change.
+    - name: Reconnect so the new group membership is in the logon token
+      ansible.builtin.meta: reset_connection
+
+    - name: Show the domain
+      ansible.windows.win_powershell:
+        script: |
+          $Ansible.Changed = $false
+          $d = Get-ADDomain
+          [ordered]@{
+              dns_root = $d.DNSRoot
+              pdc      = $d.PDCEmulator
+              gpos     = @(Get-GPO -All | ForEach-Object { $_.DisplayName } | Sort-Object)
+              os       = (Get-CimInstance -ClassName Win32_OperatingSystem).Caption
+          }
+      register: lab_domain_info
+
+    - name: Report the domain
+      ansible.builtin.debug:
+        var: lab_domain_info.output

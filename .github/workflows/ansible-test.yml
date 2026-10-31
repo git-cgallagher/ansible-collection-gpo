@@ -33,7 +33,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           # Paths that are NOT in the tarball (galaxy.yml build_ignore).
-          ignore='^(\.github/|molecule/|tests/|AGENTS\.md$|\.ansible-lint$|\.yamllint$|\.gitignore$)'
+          ignore='^(\.github/|\.config/|roles/[^/]+/molecule/|tests/|AGENTS\.md$|\.ansible-lint(-ignore)?$|\.yamllint$|\.gitignore$)'
           shipped=$(git diff --name-only "$BASE"...HEAD | grep -Ev "$ignore" || true)
           if [ -z "$shipped" ]; then echo "No shipped files changed; no release needed."; exit 0; fi
           echo "Shipped files changed:"; echo "$shipped" | sed 's/^/  /'
@@ -97,8 +97,9 @@ jobs:
       - run: |
           pip install ansible-core ansible-lint yamllint
           ansible-galaxy collection install -r requirements.yml
-          # The domain-lab scenario's playbooks use microsoft.ad modules.
-          ansible-galaxy collection install -r molecule/domain_lab/requirements.yml
+          # The roles' Molecule scenarios (the shared lab in tests/domain_lab)
+          # use microsoft.ad modules.
+          ansible-galaxy collection install -r tests/domain_lab/requirements.yml
       - run: yamllint .
       - run: ansible-lint
 
@@ -114,7 +115,7 @@ jobs:
       - name: Parse scripts and run PSScriptAnalyzer
         shell: pwsh
         run: |
-          $files = Get-ChildItem roles, molecule -Recurse -Filter '*.ps1'
+          $files = Get-ChildItem roles, tests -Recurse -Filter '*.ps1'
           if (-not $files) { throw 'No PowerShell scripts found; did the layout change?' }
           $failed = $false
           foreach ($f in $files) {
@@ -127,7 +128,7 @@ jobs:
           }
           if ($failed) { exit 1 }
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $findings = 'roles', 'molecule' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
+          $findings = 'roles', 'tests' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Severity Warning, Error }
           $findings | Format-Table -AutoSize | Out-String -Width 400 | Write-Host
           if ($findings | Where-Object Severity -eq 'Error') { exit 1 }
 

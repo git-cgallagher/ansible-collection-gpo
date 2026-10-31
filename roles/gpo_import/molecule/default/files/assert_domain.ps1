@@ -1,4 +1,4 @@
-# assert_domain.ps1 — check the live domain against the domain_lab fixture's
+# assert_domain.ps1 — check the live domain against the domain lab fixture's
 # authored state, through GPMC and AD directly (never through the roles).
 # Returns { failures = [...]; observed = {...} }; the playbook asserts that
 # failures is empty and prints observed either way.

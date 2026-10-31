@@ -70,7 +70,7 @@
         timeout: 5
         msg: >-
           127.0.0.1:{{ lab_platform.winrm_port }} is already in use — a VM from a
-          previous run? Run `molecule destroy -s domain_lab` first.
+          previous run? Run `molecule destroy` in that role's directory first.
 
     # --- box image (cached across runs, keyed by checksum) -----------------------
     - name: Fetch and unpack the box

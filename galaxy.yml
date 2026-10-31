@@ -1,6 +1,6 @@
 namespace: git_cgallagher
 name: gpo
-version: 0.1.0
+version: 0.1.1
 readme: README.md
 authors:
   - Chris Gallagher (@git-cgallagher)
@@ -25,11 +25,13 @@ build_ignore:
   - .github
   - .ansible
   - collections
-  - molecule
+  - .config
+  - roles/*/molecule
   - .molecule-collections
   - tests
   - '*.tar.gz'
   - .ansible-lint
+  - .ansible-lint-ignore
   - .yamllint
   - .gitignore
   - AGENTS.md
